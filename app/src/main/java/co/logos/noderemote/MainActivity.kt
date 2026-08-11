@@ -112,7 +112,9 @@ class MainActivity : ComponentActivity() {
         // permission prompt itself, so there is no separate permission dance.
         val scanner = rememberLauncherForActivityResult(ScanContract()) { res ->
             val raw = res.contents
-            if (raw.isNullOrBlank()) { note = "Scan cancelled" }
+            // Backing out of the scanner is a normal outcome, not a failure. Reporting it
+            // in red teaches people to distrust the red text that does matter.
+            if (raw.isNullOrBlank()) { note = "" }
             else if (parse(raw) == null) { note = "That QR isn't a Node Remote pairing code" }
             else {
                 uri = raw.trim()

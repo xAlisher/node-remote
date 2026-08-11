@@ -83,10 +83,10 @@ fun WelcomeScreen(
                 modifier = Modifier.fillMaxWidth().height(52.dp),
                 shape = RoundedCornerShape(12.dp),
                 colors = ButtonDefaults.buttonColors(
-                    containerColor = LogosColors.orange300,
-                    contentColor = LogosColors.gray900),
+                    containerColor = LogosColors.orange500,
+                    contentColor = LogosColors.white),
             ) {
-                QrGlyph(LogosColors.gray900, 20.dp)
+                QrGlyph(LogosColors.white, 20.dp)
                 Spacer(Modifier.width(10.dp))
                 Text("Scan QR", fontWeight = FontWeight.Bold, fontSize = 16.sp)
             }
@@ -103,7 +103,7 @@ fun WelcomeScreen(
                      color = LogosColors.red500)
             }
 
-            Text("Get the pairing code from the Node Remote panel in Logos Basecamp.",
+            Text("Get the pairing code from the Node Remote app in Logos Basecamp.",
                  style = MaterialTheme.typography.bodySmall,
                  color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
@@ -145,7 +145,7 @@ fun EnterUriScreen(
     Column(Modifier.fillMaxSize().padding(24.dp),
            verticalArrangement = Arrangement.spacedBy(14.dp)) {
 
-        Text("Paste the pairing code shown in Basecamp.",
+        Text("Paste the pairing code from the Node Remote app in Basecamp.",
              style = MaterialTheme.typography.bodyMedium,
              color = MaterialTheme.colorScheme.onSurfaceVariant)
 
@@ -181,8 +181,8 @@ fun EnterUriScreen(
             modifier = Modifier.fillMaxWidth().height(50.dp),
             shape = RoundedCornerShape(12.dp),
             colors = ButtonDefaults.buttonColors(
-                containerColor = LogosColors.orange300,
-                contentColor = LogosColors.gray900),
+                containerColor = LogosColors.orange500,
+                contentColor = LogosColors.white),
         ) { Text("Connect", fontWeight = FontWeight.Bold) }
 
         if (note.isNotEmpty()) {
@@ -194,20 +194,34 @@ fun EnterUriScreen(
     }
 }
 
-// ── Lucide glyphs (24x24, stroke 2) ───────────────────────────────────────────────────
+// ── Lucide glyphs (24x24, stroke 2), verbatim from lucide.dev ────────────────────────
+//
+// NOTE: Lucide ships NO brand icons — github/twitter/facebook/linkedin all 404 in the
+// repo; they were dropped in favour of simple-icons. So the footer uses Lucide's generic
+// equivalents rather than smuggling in a second icon set: code-xml for the repository and
+// at-sign for the handle. If recognisable brand marks are wanted, that is a deliberate
+// decision to add simple-icons, not something Lucide can supply.
 private object Ic {
-    const val QR = "M3 3h6v6H3zM15 3h6v6h-6zM3 15h6v6H3zM15 15h2v2h-2zM19 15h2v2h-2z" +
-                   "M15 19h2v2h-2zM19 19h2v2h-2z"
+    // lucide `scan-qr-code` — the SCAN action, not a static qr-code glyph. Subpaths
+    // concatenated; the rect is drawn separately (PathParser has no <rect>).
+    const val SCAN_QR = "M17 12v4a1 1 0 0 1-1 1h-4 M17 3h2a2 2 0 0 1 2 2v2 M17 8V7 " +
+                        "M21 17v2a2 2 0 0 1-2 2h-2 M3 7V5a2 2 0 0 1 2-2h2 M7 17h.01 " +
+                        "M7 21H5a2 2 0 0 1-2-2v-2"
     const val PASTE = "M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2" +
                       "M9 2h6a1 1 0 0 1 1 1v2a1 1 0 0 1-1 1H9a1 1 0 0 1-1-1V3a1 1 0 0 1 1-1z"
-    // simple-icons github
-    const val GITHUB = "M12 .3a12 12 0 0 0-3.8 23.4c.6.1.8-.3.8-.6v-2c-3.3.7-4-1.6-4-1.6-.6-1.4-1.4-1.8-1.4-1.8" +
-                       "-1-.7.1-.7.1-.7 1.2 0 1.8 1.2 1.8 1.2 1 1.8 2.8 1.3 3.5 1 0-.8.4-1.3.7-1.6" +
-                       "-2.7-.3-5.5-1.3-5.5-6 0-1.2.5-2.3 1.3-3.1-.2-.4-.6-1.6.1-3.2 0 0 1-.3 3.3 1.2a11.5 11.5 0 0 1 6 0" +
-                       "c2.3-1.5 3.3-1.2 3.3-1.2.7 1.6.2 2.8.1 3.2.8.8 1.3 1.9 1.3 3.1 0 4.7-2.8 5.7-5.5 6" +
-                       ".4.4.8 1.1.8 2.2v3.3c0 .3.2.7.8.6A12 12 0 0 0 12 .3z"
-    // simple-icons x
-    const val X = "M18.9 1.2h3.7l-8.1 9.2 9.5 12.6h-7.4l-5.9-7.6-6.7 7.6H.3l8.6-9.9L0 1.2h7.6l5.2 7z"
+    // lucide `x`
+    const val CLOSE = "M18 6 6 18M6 6l12 12"
+}
+
+/**
+ * The two brand marks. Lucide deliberately ships no brand icons (github/twitter/etc are
+ * 404 in its repo), so these are the vendors' OWN artwork as published by simple-icons —
+ * 24x24, single filled path, tinted to sit with the rest of the UI instead of appearing
+ * in brand colours.
+ */
+private object Brand {
+    const val GITHUB = "M12 .297c-6.63 0-12 5.373-12 12 0 5.303 3.438 9.8 8.205 11.385.6.113.82-.258.82-.577 0-.285-.01-1.04-.015-2.04-3.338.724-4.042-1.61-4.042-1.61C4.422 18.07 3.633 17.7 3.633 17.7c-1.087-.744.084-.729.084-.729 1.205.084 1.838 1.236 1.838 1.236 1.07 1.835 2.809 1.305 3.495.998.108-.776.417-1.305.76-1.605-2.665-.3-5.466-1.332-5.466-5.93 0-1.31.465-2.38 1.235-3.22-.135-.303-.54-1.523.105-3.176 0 0 1.005-.322 3.3 1.23.96-.267 1.98-.399 3-.405 1.02.006 2.04.138 3 .405 2.28-1.552 3.285-1.23 3.285-1.23.645 1.653.24 2.873.12 3.176.765.84 1.23 1.91 1.23 3.22 0 4.61-2.805 5.625-5.475 5.92.42.36.81 1.096.81 2.22 0 1.606-.015 2.896-.015 3.286 0 .315.21.69.825.57C20.565 22.092 24 17.592 24 12.297c0-6.627-5.373-12-12-12"
+    const val X = "M14.234 10.162 22.977 0h-2.072l-7.591 8.824L7.251 0H.258l9.168 13.343L.258 24H2.33l8.016-9.318L16.749 24h6.993zm-2.837 3.299-.929-1.329L3.076 1.56h3.182l5.965 8.532.929 1.329 7.754 11.09h-3.182z"
 }
 
 @Composable
@@ -223,7 +237,24 @@ private fun LucideGlyph(path: String, tint: Color, size: Dp, filled: Boolean = f
     }
 }
 
-@Composable fun QrGlyph(tint: Color, size: Dp = 22.dp) = LucideGlyph(Ic.QR, tint, size)
+@Composable
+fun QrGlyph(tint: Color, size: Dp = 22.dp) {
+    val p = remember { PathParser().parsePathString(Ic.SCAN_QR).toPath() }
+    Canvas(Modifier.size(size)) {
+        val s = this.size.minDimension / 24f
+        scale(s, pivot = Offset.Zero) {
+            val st = Stroke(width = 2f, cap = StrokeCap.Round, join = StrokeJoin.Round)
+            drawPath(p, tint, style = st)
+            // <rect x=7 y=7 w=5 h=5 rx=1>
+            drawRoundRect(tint, topLeft = Offset(7f, 7f),
+                          size = androidx.compose.ui.geometry.Size(5f, 5f),
+                          cornerRadius = androidx.compose.ui.geometry.CornerRadius(1f, 1f),
+                          style = st)
+        }
+    }
+}
 @Composable fun PasteGlyph(tint: Color, size: Dp = 20.dp) = LucideGlyph(Ic.PASTE, tint, size)
-@Composable fun GithubGlyph(tint: Color, size: Dp = 22.dp) = LucideGlyph(Ic.GITHUB, tint, size, filled = true)
-@Composable fun XGlyph(tint: Color, size: Dp = 20.dp) = LucideGlyph(Ic.X, tint, size, filled = true)
+@Composable fun CloseGlyph(tint: Color, size: Dp = 22.dp) = LucideGlyph(Ic.CLOSE, tint, size)
+// Brand marks are FILLED, not stroked — that is how the official artwork is drawn.
+@Composable fun GithubGlyph(tint: Color, size: Dp = 21.dp) = LucideGlyph(Brand.GITHUB, tint, size, filled = true)
+@Composable fun XGlyph(tint: Color, size: Dp = 19.dp) = LucideGlyph(Brand.X, tint, size, filled = true)

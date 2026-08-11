@@ -31,8 +31,10 @@ object LogosColors {
 }
 
 private val Scheme = darkColorScheme(
-    primary = LogosColors.orange300,
-    onPrimary = LogosColors.gray900,
+    // Buttons use 1-click's CTA orange (ctaOrange = primaryHover = orange500), with white
+    // copy. orange300 stays the ACCENT colour for tabs, links and highlights.
+    primary = LogosColors.orange500,
+    onPrimary = LogosColors.white,
     primaryContainer = LogosColors.orange500,
     onPrimaryContainer = LogosColors.white,
 
