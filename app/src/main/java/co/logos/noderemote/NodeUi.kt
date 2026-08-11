@@ -30,6 +30,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
+import kotlinx.coroutines.delay
 import org.json.JSONArray
 import org.json.JSONObject
 
@@ -81,13 +82,27 @@ data class Proposal(val id: String, val txs: Int, val removed: Int, val time: St
 }
 
 @Composable
-fun StatusTab(s: NodeState, raw: String, control: @Composable () -> Unit = {}) {
+fun StatusTab(s: NodeState, raw: String, note: String = "",
+              control: @Composable () -> Unit = {}) {
     val o = remember(raw) { runCatching { JSONObject(raw) }.getOrNull() }
 
     Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(16.dp),
            verticalArrangement = Arrangement.spacedBy(12.dp)) {
 
-        NodeStateBlock(s, control)
+        // An error REPLACES the state block rather than sitting under it: "Online" beside
+        // a failure is contradictory, and the reader has to work out which to believe.
+        // Shown in full — the longest real one measured is 131 chars (a YAML syntax error
+        // carrying line/column), and truncating that discards the part that locates it.
+        val nodeErr = s.error.takeIf { it.isNotEmpty() && s.answered }
+        val shown = note.takeIf { it.isNotEmpty() } ?: nodeErr
+        if (shown != null) ErrorCard(shown, control)
+        else NodeStateBlock(s, control)
+
+        run {
+            val balance = o?.optString("balance")?.ifEmpty { null }
+            InfoRow("Balance", balance ?: "—",
+                    if (balance != null) LogosColors.orange300 else LogosColors.gray400)
+        }
 
         Row(horizontalArrangement = Arrangement.spacedBy(12.dp), modifier = Modifier.fillMaxWidth()) {
             Tile("Height", if (s.height >= 0) "${s.height}" else "—", Modifier.weight(1f))
@@ -95,15 +110,6 @@ fun StatusTab(s: NodeState, raw: String, control: @Composable () -> Unit = {}) {
         }
         Row(horizontalArrangement = Arrangement.spacedBy(12.dp), modifier = Modifier.fillMaxWidth()) {
             Tile("Peers", if (s.peers >= 0) "${s.peers}" else "—", Modifier.weight(1f))
-            val conns = o?.optInt("connections", -1) ?: -1
-            Tile("Connections", if (conns >= 0) "$conns" else "—", Modifier.weight(1f))
-        }
-        Row(horizontalArrangement = Arrangement.spacedBy(12.dp), modifier = Modifier.fillMaxWidth()) {
-            // Orange is for a real value. An unknown balance is grey like any other
-            // missing field — colouring a dash draws the eye to nothing.
-            val balance = o?.optString("balance")?.ifEmpty { null }
-            Tile("Balance", balance ?: "—", Modifier.weight(1f),
-                 accent = if (balance != null) LogosColors.orange300 else LogosColors.gray400)
             // Blend is the mix-network role: Edge (uses it) vs Core (relays for others).
             val blend = o?.optString("blendStatus")?.ifEmpty { null } ?: "—"
             val bp = o?.optInt("blendPeers", -1) ?: -1
@@ -147,6 +153,36 @@ fun StatusTab(s: NodeState, raw: String, control: @Composable () -> Unit = {}) {
  * Red is reserved for an ACTUAL error reported by the node, not for "we could not reach
  * it" — those are different problems and colouring them the same trains you to ignore both.
  */
+/**
+ * Full-text, copyable error. No maxLines: a truncated error is worse than none, because
+ * the tail is where the line/column and the actual cause live.
+ */
+@Composable
+private fun ErrorCard(text: String, control: @Composable () -> Unit = {}) {
+    val clip = LocalClipboardManager.current
+    var copied by remember(text) { mutableStateOf(false) }
+    LaunchedEffect(copied) { if (copied) { delay(1400); copied = false } }
+    Surface(color = LogosColors.red500.copy(alpha = 0.10f),
+            shape = MaterialTheme.shapes.medium,
+            modifier = Modifier.fillMaxWidth()) {
+      Column {
+        Row(Modifier.padding(start = 4.dp, top = 8.dp, bottom = 8.dp, end = 14.dp),
+            verticalAlignment = Alignment.Top) {
+            IconButton(onClick = { clip.setText(AnnotatedString(text)); copied = true }) {
+                CopyGlyph(if (copied) LogosColors.green500 else LogosColors.gray400)
+            }
+            Text(text,
+                 color = LogosColors.red500,
+                 style = MaterialTheme.typography.bodySmall,
+                 modifier = Modifier.weight(1f).padding(top = 12.dp))
+        }
+        // The control still has to be reachable while an error is displayed — an error is
+        // usually the moment you most want to start or stop the node.
+        Row(Modifier.fillMaxWidth().padding(start = 14.dp, bottom = 8.dp)) { control() }
+      }
+    }
+}
+
 @Composable
 private fun NodeStateBlock(s: NodeState, control: @Composable () -> Unit = {}) {
     val err = s.error.takeIf { it.isNotEmpty() && s.reachable }
@@ -164,17 +200,28 @@ private fun NodeStateBlock(s: NodeState, control: @Composable () -> Unit = {}) {
         Column(Modifier.padding(horizontal = 16.dp, vertical = 14.dp)) {
             Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                 Text(label, fontWeight = FontWeight.Bold, color = color,
+                     style = MaterialTheme.typography.titleMedium,
                      modifier = Modifier.weight(1f))
                 // Start/Stop lives HERE, next to the thing it acts on, rather than in the
                 // title bar where it sat beside an app name it has nothing to do with.
                 control()
             }
-            // The node's own words, verbatim. Paraphrasing an error is how you lose the
-            // one string that would have told you what actually happened.
-            if (err != null) {
-                Spacer(Modifier.height(6.dp))
-                Text(err, style = MaterialTheme.typography.bodySmall, color = LogosColors.red500)
-            }
+        }
+    }
+}
+
+/** Full-width label/value row, same shape as the Status block. */
+@Composable
+private fun InfoRow(label: String, value: String, accent: Color) {
+    Surface(color = LogosColors.gray875, shape = MaterialTheme.shapes.medium,
+            modifier = Modifier.fillMaxWidth()) {
+        Row(Modifier.padding(horizontal = 16.dp, vertical = 14.dp),
+            verticalAlignment = Alignment.CenterVertically) {
+            Text(label, style = MaterialTheme.typography.labelMedium,
+                 color = MaterialTheme.colorScheme.onSurfaceVariant,
+                 modifier = Modifier.weight(1f))
+            Text(value, fontWeight = FontWeight.Bold, color = accent,
+                 style = MaterialTheme.typography.titleMedium)
         }
     }
 }
@@ -198,6 +245,7 @@ private fun CopyRow(label: String, value: String) {
     if (value.isEmpty()) return
     val clip = LocalClipboardManager.current
     var copied by remember { mutableStateOf(false) }
+    LaunchedEffect(copied) { if (copied) { delay(1400); copied = false } }
     Row(Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 8.dp),
         verticalAlignment = Alignment.CenterVertically) {
         Column(Modifier.weight(1f)) {

@@ -14,6 +14,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
+import androidx.compose.foundation.layout.offset
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
@@ -138,8 +139,28 @@ class MainActivity : ComponentActivity() {
                     TorClient.http().newCall(req).execute().use { it.body?.string().orEmpty() }
                 }
             }
-            note = r.getOrElse { "failed: ${it.message}" }.take(160)
-            android.util.Log.i(TAG, "control $path -> $note")
+            // Show the MESSAGE, not the envelope. Dumping the raw body put
+            // {"error":"The node is not running.","ok":false} on screen — the reader has
+            // to parse JSON in their head to find the one sentence that matters.
+            note = r.fold(
+                onSuccess = { body ->
+                    runCatching {
+                        val o = org.json.JSONObject(body)
+                        val err = o.optString("error")
+                        when {
+                            o.optBoolean("ok", false) -> ""       // success: nothing to say
+                            // NOT an error: the request's INTENT was already satisfied.
+                            // "The node is not running" in reply to a STOP is the desired
+                            // end state, and painting a normal stopped node red teaches
+                            // people to ignore the red box that does matter.
+                            isAlreadyInDesiredState(path, err) -> ""
+                            else -> err.ifEmpty { body }
+                        }
+                    }.getOrElse { body }
+                },
+                onFailure = { it.message ?: "request failed" },
+            )
+            android.util.Log.i(TAG, "control $path -> ${note.ifEmpty { "ok" }}")
             busy = false
             refresh()
         }
@@ -202,16 +223,22 @@ class MainActivity : ComponentActivity() {
                             Link.NO_INTERNET -> "No internet" to LogosColors.red500
                             Link.DISCONNECTED -> "Disconnected" to LogosColors.gray400
                         }
-                        Text(txt, fontSize = 12.sp, color = col)
+                        Text(txt, fontSize = 12.sp, color = col,
+                             lineHeight = 13.sp,
+                             modifier = Modifier.offset(y = (-3).dp))
                     }
                 },
                 actions = {
                     // Gear only. The Start/Stop control moved into the Status row, next to
                     // the state it acts on, instead of sitting beside the app name.
                     if (connected && !showSettings) {
-                        IconButton(onClick = { showSettings = true },
-                                   modifier = Modifier.padding(end = 6.dp)) {
-                            GearGlyph(LogosColors.white)
+                        // fillMaxHeight + Center: the title is two lines here, and the
+                        // default action alignment left the gear riding high against it.
+                        Box(Modifier.fillMaxHeight().padding(end = 6.dp),
+                            contentAlignment = Alignment.Center) {
+                            IconButton(onClick = { showSettings = true }) {
+                                GearGlyph(LogosColors.white)
+                            }
                         }
                     }
                 },
@@ -270,13 +297,8 @@ class MainActivity : ComponentActivity() {
                                 text = { Text(t, fontWeight = if (tab == i) FontWeight.Bold else FontWeight.Normal) })
                         }
                     }
-                    if (note.isNotEmpty()) {
-                        Text(note, Modifier.padding(horizontal = 16.dp, vertical = 6.dp),
-                             style = MaterialTheme.typography.bodySmall,
-                             color = MaterialTheme.colorScheme.onSurfaceVariant)
-                    }
                     when (tab) {
-                        0 -> StatusTab(state, rawStatus) {
+                        0 -> StatusTab(state, rawStatus, note) {
                             if (!hasData) {
                                 CircularProgressIndicator(Modifier.size(18.dp),
                                     strokeWidth = 2.dp, color = LogosColors.orange300)
@@ -328,6 +350,20 @@ class MainActivity : ComponentActivity() {
                 close()
             }
             drawPath(p, tint)
+        }
+    }
+
+    /**
+     * True when the node already IS what the request asked for. blockchain_module reports
+     * these as ok:false with a message, but they are outcomes, not failures — the only
+     * genuine errors are things like a config that will not parse.
+     */
+    private fun isAlreadyInDesiredState(path: String, err: String): Boolean {
+        val e = err.lowercase()
+        return when (path) {
+            "stop" -> "not running" in e || "already stopped" in e
+            "start" -> "already running" in e || "already started" in e
+            else -> false
         }
     }
 
