@@ -1,0 +1,39 @@
+{
+  "name": "node_remote",
+  "display_name": "Node Remote",
+  "version": "0.1.0",
+  "type": "core",
+  "interface": "universal",
+  "category": "blockchain",
+  "description": "Remote command surface for the Logos blockchain node, served over a Tor v3 onion service with client authorization.",
+  "main": "node_remote_plugin",
+  "//dependencies": "blockchain_module ships no PREBUILT SDK header, so it must be resolved from source. mkLogosModule.nix:160 does `lib.filterAttrs (n: _: elem n dependencies) flakeInputs` \u2014 the flake input's ATTRIBUTE NAME must equal this dependency string EXACTLY. Naming the input `blockchain-module` (hyphen) silently drops it and the build fails later on a missing blockchain_module_api.h. Keep the underscore.",
+  "dependencies": [
+    "blockchain_module"
+  ],
+  "nix": {
+    "packages": {
+      "build": [
+        "pkg-config"
+      ],
+      "runtime": [
+        "qt6.qthttpserver",
+        "tor",
+        "openssl"
+      ]
+    },
+    "external_libraries": [],
+    "cmake": {
+      "find_packages": [
+        "Qt6 REQUIRED COMPONENTS Core Network HttpServer"
+      ],
+      "extra_sources": [],
+      "extra_include_dirs": [],
+      "extra_link_libraries": [
+        "Qt6::Core",
+        "Qt6::Network",
+        "Qt6::HttpServer"
+      ]
+    }
+  }
+}

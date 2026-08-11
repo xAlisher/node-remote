@@ -1,0 +1,19 @@
+{
+  "name": "node_remote_ui",
+  "display_name": "Node Remote",
+  "version": "0.1.0",
+  "type": "ui_qml",
+  "category": "blockchain",
+  "description": "Watch, control and receive notifications from the node on your phone over Tor connection.",
+  "view": "qml/Main.qml",
+  "dependencies": [
+    "node_remote"
+  ],
+  "nix": {
+    "packages": {
+      "build": [],
+      "runtime": []
+    }
+  },
+  "icon": "icons/node-remote.png"
+}
