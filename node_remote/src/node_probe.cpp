@@ -110,6 +110,67 @@ QByteArray NodeProbe::get(const QString& url, int timeoutMs, bool* ok)
     return body;
 }
 
+QString NodeProbe::lastNodeError() const
+{
+    // Ported from logos_node_1click_backend.cpp:36-120. The value of this table is that
+    // every entry is ACTIONABLE — "the disk is full" tells you what to do, whereas the raw
+    // log line it came from does not. Order matters: recovery is checked FIRST because it
+    // is not a failure at all, just a slow start.
+    const QString cfg = userConfigPath();
+    if (cfg.isEmpty()) return {};
+    const QDir logsDir(QFileInfo(cfg).absoluteDir().filePath(QStringLiteral("logs")));
+    if (!logsDir.exists()) return {};
+    const QFileInfoList files = logsDir.entryInfoList(QDir::Files, QDir::Time);
+    if (files.isEmpty()) return {};
+
+    QFile f(files.first().absoluteFilePath());
+    if (!f.open(QIODevice::ReadOnly | QIODevice::Text)) return {};
+    const qint64 tail = qMin<qint64>(f.size(), 128 * 1024);
+    f.seek(f.size() - tail);
+    const QStringList lines = QString::fromUtf8(f.readAll()).split(QLatin1Char('\n'));
+    f.close();
+
+    auto has = [](const QString& l, const char* s) {
+        return l.contains(QLatin1String(s), Qt::CaseInsensitive);
+    };
+
+    for (int i = lines.size() - 1; i >= 0; --i) {
+        const QString& ln = lines.at(i);
+
+        // NOT an error — the node is replaying stored blocks.
+        if (has(ln, "blocks to replay") || has(ln, "Chain recovery") || has(ln, "recovering chain state"))
+            return QStringLiteral("The node is replaying stored blocks to catch up — this can take a few minutes.");
+
+        if (has(ln, "crashed (signal") || has(ln, "panicked") || has(ln, "SIGABRT") || has(ln, "SIGSEGV"))
+            return QStringLiteral("The node process crashed. Wipe the database and start over to recover.");
+
+        if (has(ln, "Storage backend error") || has(ln, "from storage") || has(ln, "Storage request failed"))
+            return QStringLiteral("The chain database is in a bad state. Wipe the database and start over.");
+
+        if (has(ln, "No locks available") || has(ln, "Resource temporarily unavailable") || has(ln, "IO error"))
+            return QStringLiteral("The database is locked (another node may be running) or the disk had an I/O error.");
+
+        if (has(ln, "No space left") || has(ln, "ENOSPC"))
+            return QStringLiteral("The disk is full — free up space, then wipe and start over.");
+
+        if (has(ln, "AddrInUse") || has(ln, "address already in use") || has(ln, "EADDRINUSE")
+            || has(ln, "failed to bind"))
+            return QStringLiteral("A required network port is already in use — another node may still be running.");
+
+        if (has(ln, "genesis") && (has(ln, "mismatch") || has(ln, "does not match")))
+            return QStringLiteral("This database is from a different network (genesis mismatch).");
+
+        if (has(ln, "AllPeersFailed") || has(ln, "does not support")
+            || (has(ln, "protocol") && has(ln, "mismatch")))
+            return QStringLiteral("Couldn't sync from the configured peers (unreachable, or a different network).");
+
+        if (has(ln, "missing field") || has(ln, "invalid type") || has(ln, "failed to parse")
+            || has(ln, "deserialize"))
+            return QStringLiteral("The node config couldn't be parsed. Regenerate it on the desktop.");
+    }
+    return {};
+}
+
 QByteArray NodeProbe::statusJson()
 {
     QJsonObject out;
@@ -122,7 +183,11 @@ QByteArray NodeProbe::statusJson()
         // Honest failure: distinguish "node not running" from "we have no idea".
         out["reachable"] = false;
         out["status"] = "NotRunning";
-        out["error"] = "node API unreachable";
+        // Ask the node's own log WHY instead of reporting a generic unreachable. A stopped
+        // node is a normal state, so only attach an error when the log actually explains
+        // a failure — otherwise the phone shows "Not Started", which is the truth.
+        const QString honest = lastNodeError();
+        if (!honest.isEmpty()) out["error"] = honest;
         return QJsonDocument(out).toJson(QJsonDocument::Compact);
     }
 

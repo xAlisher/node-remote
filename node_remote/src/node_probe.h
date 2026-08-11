@@ -34,6 +34,11 @@ public:
     /// falling back to the newest module_data/blockchain_module/*/user_config.yaml.
     QString userConfigPath() const;
 
+    /// The node's own log, mapped to a plain-language cause. Ported from
+    /// logos_node_1click_backend::lastNodeError() so both surfaces explain a failure the
+    /// same way. Empty when nothing recognisable is in the tail.
+    QString lastNodeError() const;
+
     /// Combined status payload. Never throws; on any failure the JSON carries
     /// "reachable":false plus an "error" string, so the phone can render honestly
     /// rather than showing a blank screen.
