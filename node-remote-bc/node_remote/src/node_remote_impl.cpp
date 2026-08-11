@@ -124,11 +124,28 @@ std::string NodeRemoteImpl::getRemoteInfo()
     r["onion"]   = m_onion->onion();
     r["port"]    = static_cast<int>(m_port);
     r["error"]   = m_onion->lastError();
-    // "connected" means a phone has actually authenticated against the onion — NOT that a
-    // client-auth key exists. The key is minted when the QR is drawn, so keying it off the
-    // key file made the pane declare itself connected before anyone had scanned anything.
-    r["lastSeen"]  = m_http->lastAuthedAt();
-    r["connected"] = m_http->lastAuthedAt() > 0;
+    // Two DIFFERENT questions, and conflating them has now bitten us in both directions.
+    //
+    //   everConnected — has a phone EVER authenticated in this session? Latches on. This is
+    //                   what says "pairing worked, stop showing the QR". Keying that off the
+    //                   key file instead made the pane hide the code the instant it drew it.
+    //
+    //   connected     — is a phone talking to us RIGHT NOW? Derived from RECENCY, because
+    //                   the phone pushes no disconnect and the module cannot see the app's
+    //                   state. It polls every 10s foreground / 15s backgrounded, so silence
+    //                   past kStaleSecs means it is gone. Without this the pane said
+    //                   "Connected" forever after a single request — including after the
+    //                   phone was switched off.
+    //
+    // 90s, not 30s: Doze and a stalled Tor circuit can legitimately stretch a poll, and a
+    // pane that flickers between Connected and Idle is worse than one that is 90s late.
+    constexpr qint64 kStaleSecs = 90;
+    const qint64 seen = m_http->lastAuthedAt();
+    const qint64 now  = QDateTime::currentSecsSinceEpoch();
+    r["lastSeen"]      = seen;
+    r["lastSeenSecs"]  = seen > 0 ? (now - seen) : -1;   // -1 = never
+    r["everConnected"] = seen > 0;
+    r["connected"]     = seen > 0 && (now - seen) <= kStaleSecs;
     QJsonArray cl;
     for (const QString& c : m_onion->authorizedClients()) cl.append(c);
     r["clients"] = cl;

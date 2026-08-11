@@ -2,6 +2,27 @@ apply plugin: "com.android.application"
 apply plugin: "org.jetbrains.kotlin.android"
 apply plugin: "org.jetbrains.kotlin.plugin.compose"
 
+/**
+ * Resolve a release-signing credential as EITHER a Gradle property (~/.gradle/gradle.properties,
+ * or -P) OR a plain environment variable of the same name.
+ *
+ * findProperty alone does NOT see exported env vars — only ORG_GRADLE_PROJECT_* — so a release
+ * job that exported RELEASE_STORE_FILE=... would silently fall through to the debug key and
+ * produce an APK that looks fine and can never be updated in place. Blank resolves to null so an
+ * empty value cannot half-configure the signing config. Lifted from Peers, where this exact
+ * footgun is issue #356.
+ *
+ * The names are deliberately NODE_REMOTE_-prefixed. A bare RELEASE_STORE_FILE is already set
+ * GLOBALLY in ~/.gradle/gradle.properties on the maintainer's machine, pointing at the Peers
+ * keystore — so an unprefixed name silently signs THIS app with PEERS' key. Verified, not
+ * theorised: the first release build here came out as "CN=Peers, O=Peers, C=US".
+ */
+ext.releaseSigningCredential = { String name ->
+    def value = project.findProperty(name) ?: System.getenv(name)
+    def resolved = value?.toString()?.trim()
+    return resolved ? resolved : null
+}
+
 android {
     namespace "co.logos.noderemote"
     compileSdk rootProject.ext.compileSdkVersion
@@ -21,9 +42,45 @@ android {
             keyAlias 'androiddebugkey'
             keyPassword 'android'
         }
+        // Production key. Supplied by the maintainer via properties or env vars and NEVER
+        // committed — see docs/SIGNING.md. Only populated when a keystore path is given, so
+        // ordinary dev builds still work with no setup.
+        release {
+            def storeFilePath = releaseSigningCredential('NODE_REMOTE_RELEASE_STORE_FILE')
+            if (storeFilePath) {
+                storeFile file(storeFilePath)
+                storePassword releaseSigningCredential('NODE_REMOTE_RELEASE_STORE_PASSWORD')
+                keyAlias releaseSigningCredential('NODE_REMOTE_RELEASE_KEY_ALIAS')
+                keyPassword releaseSigningCredential('NODE_REMOTE_RELEASE_KEY_PASSWORD')
+            }
+        }
     }
     buildTypes {
         debug { signingConfig signingConfigs.debug }
+        release {
+            // Sign with the production key when it is configured; fall back to debug for
+            // local builds. A distributable release passes -PassertReleaseSigned, which turns
+            // that fallback into a HARD FAILURE.
+            //
+            // This matters more than it looks: Android identifies an app by its signing key,
+            // so a debug-signed APK published to F-Droid can never be upgraded in place by the
+            // real one. Every installed user would have to uninstall and lose their pairing.
+            // The guard reads the SAME resolved value the signing config uses, so the two
+            // cannot disagree about whether the key is present.
+            if (releaseSigningCredential('NODE_REMOTE_RELEASE_STORE_FILE')) {
+                signingConfig signingConfigs.release
+            } else {
+                if (project.hasProperty('assertReleaseSigned')) {
+                    throw new GradleException(
+                        "NODE_REMOTE_RELEASE_STORE_FILE not set — refusing to ship a DEBUG-SIGNED release. " +
+                        "Configure the production keystore (docs/SIGNING.md).")
+                }
+                logger.warn(
+                    "NODE_REMOTE_RELEASE_STORE_FILE not set — release APK is DEBUG-SIGNED (dev only, NOT " +
+                    "for distribution). See docs/SIGNING.md.")
+                signingConfig signingConfigs.debug
+            }
+        }
     }
 
     // kmp-tor's exec path runs the tor BINARY. Android blocks exec from the app data dir

@@ -40,12 +40,25 @@ Item {
     property int    secsLeft:  0
     property var    clients: []
     property string note:    ""
-    property bool   connected: false        // a phone has actually authenticated
+    property bool   connected:     false    // a phone is talking to us RIGHT NOW
+    property bool   everConnected: false    // a phone has authenticated at least once
+    property int    lastSeenSecs:  -1       // -1 = never
 
-    // "Paired" must mean a device SPOKE to us, not that a key exists for one. The
-    // client-auth key is written when the QR is rendered, so clients.length > 0 is true
-    // the instant the code appears — which hid the QR before it could be scanned.
-    readonly property bool paired: root.connected
+    // "Paired" must mean a device SPOKE to us, not that a key exists for one — the
+    // client-auth key is written when the QR is rendered, so clients.length > 0 is true the
+    // instant the code appears, which hid the QR before it could be scanned.
+    //
+    // It uses everConnected, NOT connected: once pairing has succeeded the pane must stop
+    // showing the QR permanently. Whether the phone is reachable this second is a separate
+    // question, answered by `connected` in the label below.
+    readonly property bool paired: root.everConnected
+
+    function seenAgo() {
+        if (root.lastSeenSecs < 0) return ""
+        if (root.lastSeenSecs < 60) return root.lastSeenSecs + "s ago"
+        if (root.lastSeenSecs < 3600) return Math.floor(root.lastSeenSecs / 60) + " min ago"
+        return Math.floor(root.lastSeenSecs / 3600) + " h ago"
+    }
 
     // callModule returns the module's JSON as a STRING inside another JSON envelope.
     function parse(res) {
@@ -60,7 +73,9 @@ Item {
         root.ready     = info.ready === true;
         root.onion     = info.onion || "";
         root.clients   = info.clients || [];
-        root.connected = info.connected === true;
+        root.connected     = info.connected === true;
+        root.everConnected = info.everConnected === true;
+        root.lastSeenSecs  = (info.lastSeenSecs === undefined) ? -1 : info.lastSeenSecs;
         if (info.error) root.note = info.error;
     }
 
@@ -87,7 +102,8 @@ Item {
         // the phone arriving — the desktop learns that only from an authenticated request.
         running: root.busy
                  || (root.onion !== "" && !root.ready)
-                 || (root.pairUri !== "" && !root.connected)
+                 || (root.pairUri !== "" && !root.everConnected)
+                 || root.everConnected      // keep the live/idle line honest while paired
         property bool inFlight: false
         onTriggered: {
             if (inFlight) return           // re-entrancy guard: callModule blocks
@@ -252,8 +268,10 @@ Item {
                     RowLayout {
                         Layout.fillWidth: true
                         Label {
-                            text: root.paired ? "Connected" : "2. Pair your phone"
-                            color: root.paired ? root.success : root.textCol
+                            text: !root.paired ? "2. Pair your phone"
+                                               : (root.connected ? "Connected" : "Paired — not connected")
+                            color: !root.paired ? root.textCol
+                                                : (root.connected ? root.success : root.textDim)
                             font.pixelSize: 15; font.bold: true
                             Layout.fillWidth: true
                         }
@@ -277,7 +295,13 @@ Item {
                         Layout.fillWidth: true
                         spacing: 6
                         Label {
+                            // The module cannot see the app's state — the phone pushes no
+                            // disconnect — so say when we last HEARD from it rather than
+                            // implying a live link we cannot observe.
                             text: root.clients.join(", ") +
+                                  (root.connected ? "" : (root.lastSeenSecs >= 0
+                                       ? "  ·  last seen " + root.seenAgo()
+                                       : "  ·  never connected")) +
                                   (root.onion ? "  ·  " + root.onion.substring(0, 12) + "…onion" : "")
                             color: root.textDim; font.pixelSize: 12
                             Layout.fillWidth: true; elide: Text.ElideRight
