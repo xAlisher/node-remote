@@ -31,6 +31,9 @@ Item {
     property bool   showSaveButton: true
     // Plain path, not StandardPaths — see the dropped Qt.labs.platform import.
     property string saveDir: "/tmp"
+    // Frame edge in px. 320 fits a 57-module pairing URI at 5 physical px per module;
+    // short URLs encode smaller and read fine in less space.
+    property int    frameSize: 320
 
     // ── Theme (override to match the host module) ─────────────────────────
     property color cardBg:      "#171717"
@@ -138,8 +141,8 @@ Item {
                     id: frame
                     visible: card._n > 0
                     Layout.alignment: Qt.AlignHCenter
-                    Layout.preferredWidth: 320
-                    Layout.preferredHeight: 320
+                    Layout.preferredWidth: card.frameSize
+                    Layout.preferredHeight: card.frameSize
                     radius: 8
                     color: card.qrBg
                     readonly property int cell: card._n > 0 ? Math.max(1, Math.floor((width - 32) / card._n)) : 1

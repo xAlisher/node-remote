@@ -27,8 +27,17 @@ Item {
     readonly property color success:   "#49F563"   // green500
     readonly property color danger:    "#FB3748"   // red500
 
-    // F-Droid listing. Placeholder until the app is published.
-    readonly property string fdroidUrl: "https://f-droid.org/packages/co.logos.noderemote/"
+    // Two ways to get the app. Both are shown as a scannable code, but only ONE at a
+    // time: two QRs side by side is an invitation to scan the wrong one, and neither is
+    // labelled once it is in a camera viewfinder.
+    readonly property string fdroidUrl: "https://xalisher.github.io/fdroid"
+    readonly property string githubUrl: "https://github.com/xAlisher/node-remote/releases/latest"
+    property int sourceTab: 0        // 0 = F-Droid, 1 = GitHub
+
+    readonly property string sourceUrl:  sourceTab === 0 ? fdroidUrl : githubUrl
+    readonly property string sourceHint: sourceTab === 0
+        ? "Scan in the F-Droid app to add the repo, then install Node Remote. Updates arrive automatically."
+        : "Scan to open the latest release, then download the APK. No automatic updates."
 
     property bool  busy:     false
     property bool  ready:    false          // onion descriptor published
@@ -192,61 +201,72 @@ Item {
                         text: "1. Get Node Remote app"
                         color: root.textCol; font.pixelSize: 15; font.bold: true
                     }
+
+                    // Segmented source picker. Deliberately not two cards: the QR below is
+                    // whichever source is selected, so there is never a choice to get wrong
+                    // once the phone's camera is up.
+                    RowLayout {
+                        spacing: 0
+                        Repeater {
+                            model: ["F-Droid", "GitHub"]
+                            delegate: Button {
+                                id: srcBtn
+                                required property int index
+                                required property string modelData
+                                readonly property bool active: root.sourceTab === index
+                                onClicked: root.sourceTab = index
+                                contentItem: Label {
+                                    text: srcBtn.modelData
+                                    color: srcBtn.active ? root.accent : root.textDim
+                                    font.pixelSize: 12
+                                    font.bold: srcBtn.active
+                                    horizontalAlignment: Text.AlignHCenter
+                                    verticalAlignment: Text.AlignVCenter
+                                }
+                                background: Rectangle {
+                                    implicitWidth: 92; implicitHeight: 30
+                                    color: srcBtn.active ? root.surface2 : "transparent"
+                                    radius: 6
+                                    border.color: srcBtn.active ? root.accent : "transparent"
+                                }
+                            }
+                        }
+                    }
+
                     Label {
-                        text: "Install Node Remote from F-Droid, then scan the code below."
+                        text: root.sourceHint
                         color: root.textDim; font.pixelSize: 12
                         Layout.fillWidth: true; wrapMode: Text.WordWrap
                     }
-                    RowLayout {
-                        Layout.fillWidth: true
-                        spacing: 8
 
-                        TextField {
-                            id: linkField
-                            Layout.fillWidth: true
-                            readOnly: true
-                            text: root.fdroidUrl
-                            color: root.textDim
-                            font.pixelSize: 12
-                            background: Rectangle {
-                                color: root.surface2; radius: 6
-                                border.color: root.border
-                            }
-                        }
-                        Button {
-                            id: copyBtn
-                            text: copyBtn.copied ? "Copied" : "Copy"
-                            property bool copied: false
-                            onClicked: {
-                                linkField.selectAll()
-                                linkField.copy()
-                                linkField.deselect()
-                                copyBtn.copied = true
-                                copyReset.restart()
-                            }
-                            contentItem: Label {
-                                text: copyBtn.text
-                                color: copyBtn.copied ? root.success : root.accent
-                                font.pixelSize: 12
-                                horizontalAlignment: Text.AlignHCenter
-                                verticalAlignment: Text.AlignVCenter
-                            }
-                            background: Rectangle {
-                                implicitWidth: 76; implicitHeight: 32
-                                color: "transparent"; radius: 6
-                                border.color: copyBtn.copied ? root.success : root.accent
-                            }
-                            Timer {
-                                id: copyReset
-                                interval: 1600
-                                onTriggered: copyBtn.copied = false
-                            }
-                        }
+                    SecretRow {
+                        Layout.fillWidth: true
+                        label: root.sourceTab === 0 ? "F-Droid repo" : "Releases"
+                        value: root.sourceUrl
+                        fieldBg: root.surface2
+                        borderCol: root.border
+                        textDim: root.textDim
+                        accentCol: root.accent
+                        okCol: root.success
                     }
+
+                    QrCard {
+                        Layout.fillWidth: true
+                        payload: root.sourceUrl
+                        frameSize: 200
+                        showSaveButton: false
+                        cardBg: root.surface2
+                        titleColor: root.textCol
+                        descColor: root.textDim
+                        accent: root.accent
+                        borderColor: root.border
+                    }
+
                     Label {
-                        // Honest: the listing does not exist yet.
-                        text: "Not published yet — this link is a placeholder."
+                        // Honest while it is true; the F-Droid listing is not live yet.
+                        text: "Not published yet — these links go live with the first release."
                         color: root.textDim; font.pixelSize: 11; font.italic: true
+                        Layout.fillWidth: true; wrapMode: Text.WordWrap
                     }
                 }
             }
