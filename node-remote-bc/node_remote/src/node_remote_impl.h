@@ -138,6 +138,7 @@ private:
     // request: the RPCs are synchronous IPC on the same event loop the HTTP server uses.
     void refreshBalance();
     QTimer* m_balanceTimer = nullptr;
+    bool    m_ipcBusy = false;      // re-entrancy guard around synchronous wallet IPC
     QString m_primaryAddress, m_balanceRaw, m_balance, m_balanceError;
 
     OnionService* m_onion = nullptr;

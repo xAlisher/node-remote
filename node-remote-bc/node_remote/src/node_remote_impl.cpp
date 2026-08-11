@@ -187,6 +187,16 @@ void NodeRemoteImpl::refreshBalance()
 {
     if (!isContextReady()) return;
 
+    // Re-entrancy guard. These are SYNCHRONOUS IPC calls, and a sync call runs a nested
+    // event loop — so a blockchain_module onNewBlock callback can land in the middle of
+    // one. During IBD blocks stream continuously, and the module took SIGSEGV ~80s in,
+    // two seconds after a balance tick, with blocks arriving throughout. This guard stops
+    // us stacking a second wallet call inside the first; it does NOT make the platform's
+    // sync IPC reentrant, so it is a mitigation, not a proof. See docs/TESTING.md.
+    if (m_ipcBusy) return;
+    m_ipcBusy = true;
+    struct Clear { bool& b; ~Clear() { b = false; } } clear{m_ipcBusy};
+
     const StdLogosResult addrs = modules().blockchain_module.wallet_get_known_addresses();
     if (!addrs.success) {
         // Instance-bound: the wallet RPCs answer only in the blockchain_module that is
@@ -239,7 +249,9 @@ void NodeRemoteImpl::onContextReady()
     if (!m_balanceTimer) {
         m_balanceTimer = new QTimer(m_onion);
         QObject::connect(m_balanceTimer, &QTimer::timeout, m_onion, [this] { refreshBalance(); });
-        m_balanceTimer->start(15000);
+        // 30s, not 15: every tick is a window for the reentrancy above, and a balance
+        // that is half a minute stale costs nothing.
+        m_balanceTimer->start(30000);
         QTimer::singleShot(3000, m_onion, [this] { refreshBalance(); });
     }
 }

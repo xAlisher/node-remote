@@ -46,6 +46,17 @@ Say so rather than implying coverage:
   but have never fired live.
 - **The honest-error table** is a faithful port of `logos_node_1click`'s mapping but has not
   been triggered at runtime for every branch.
+- **KNOWN CRASH — node_remote takes SIGSEGV during IBD.** Observed once: module loaded
+  01:28:01, crashed with signal 11 at 01:29:21 while the node was mid initial block
+  download. The evidence is timing, not a decoded stack: the balance timer ticks at +78s
+  and the crash was at +80s, and `refreshBalance()` is the only code making SYNCHRONOUS
+  blockchain_module IPC from a timer — while `onNewBlock` was firing continuously. A sync
+  IPC call runs a nested event loop, so a block callback can land inside one.
+  Mitigated with a re-entrancy guard and a 30s interval; **not proven fixed**, because the
+  backtrace was raw addresses with no symbols and no core dump was kept.
+  The pane now says "Node Remote stopped responding" instead of silently reverting to the
+  Show QR button, which is how this presented and why it took a session to notice.
+  To reproduce: pair, start a node that needs IBD, leave the pane open ~90s.
 - **Doze survival.** How long the foreground service keeps Tor alive under aggressive
   battery management is unmeasured.
 

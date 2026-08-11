@@ -81,12 +81,22 @@ Item {
         return Math.floor(root.lastSeenSecs / 3600) + " h ago"
     }
 
+    property bool moduleDead: false
+
     // callModule returns the module's JSON as a STRING inside another JSON envelope.
+    //
+    // An EMPTY or unparseable result means the module process is not answering — it has
+    // crashed or been unloaded. That has to be said out loud: silently returning {} made
+    // every field reset to its default, so a crashed module looked exactly like "never
+    // paired" and the pane quietly went back to the Show QR button with no explanation.
     function parse(res) {
+        if (res === undefined || res === null || res === "") { root.moduleDead = true; return {} }
         try {
             var once = (typeof res === "string") ? JSON.parse(res) : res;
-            return (typeof once === "string") ? JSON.parse(once) : once;
-        } catch (e) { return {}; }
+            var v = (typeof once === "string") ? JSON.parse(once) : once;
+            root.moduleDead = false
+            return v;
+        } catch (e) { root.moduleDead = true; return {}; }
     }
 
     function refresh() {
@@ -295,8 +305,35 @@ Item {
                         }
                     }
 
+                    // The module is gone. Say so instead of showing a pairing flow that
+                    // cannot work — every button here calls a process that is not there.
+                    Rectangle {
+                        visible: root.moduleDead
+                        Layout.fillWidth: true
+                        implicitHeight: deadCol.implicitHeight + 20
+                        color: "#2A1416"
+                        border.color: root.danger
+                        radius: 8
+                        ColumnLayout {
+                            id: deadCol
+                            anchors.fill: parent
+                            anchors.margins: 10
+                            spacing: 4
+                            Label {
+                                text: "node_remote module crashed — please restart the app"
+                                color: root.danger; font.pixelSize: 13; font.bold: true
+                                Layout.fillWidth: true; wrapMode: Text.WordWrap
+                            }
+                            Label {
+                                text: "Your pairing is kept on disk — the phone does not need a new QR."
+                                color: root.textDim; font.pixelSize: 11
+                                Layout.fillWidth: true; wrapMode: Text.WordWrap
+                            }
+                        }
+                    }
+
                     Label {
-                        visible: root.note !== ""
+                        visible: root.note !== "" && !root.moduleDead
                         text: root.note
                         color: root.textDim; font.pixelSize: 12
                         Layout.fillWidth: true; wrapMode: Text.WordWrap
@@ -342,7 +379,7 @@ Item {
                     Button {
                         // Also shown once the code expires — otherwise the pane strands the
                         // user with a dead QR and no way to ask for another.
-                        visible: !root.paired && !root.busy
+                        visible: !root.moduleDead && !root.paired && !root.busy
                                  && (root.pairUri === "" || root.secsLeft === 0)
                         text: root.pairUri === "" ? "Show QR" : "New code"
                         // The onion is already up on a retry; only the code needs reminting.
