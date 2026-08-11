@@ -95,7 +95,8 @@ fun StatusTab(s: NodeState, raw: String, control: @Composable () -> Unit = {}) {
         }
         Row(horizontalArrangement = Arrangement.spacedBy(12.dp), modifier = Modifier.fillMaxWidth()) {
             Tile("Peers", if (s.peers >= 0) "${s.peers}" else "—", Modifier.weight(1f))
-            Tile("Connections", o?.optString("connections")?.ifEmpty { null } ?: "—", Modifier.weight(1f))
+            val conns = o?.optInt("connections", -1) ?: -1
+            Tile("Connections", if (conns >= 0) "$conns" else "—", Modifier.weight(1f))
         }
         Row(horizontalArrangement = Arrangement.spacedBy(12.dp), modifier = Modifier.fillMaxWidth()) {
             // Orange is for a real value. An unknown balance is grey like any other
