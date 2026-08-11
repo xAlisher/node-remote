@@ -51,13 +51,15 @@ both halves at once.
 [apps catalog](https://apps.alisher.xyz), or build them yourself (see below). `node_remote`
 needs `blockchain_module` and a system `tor` binary on `PATH`.
 
-**Phone.** Add the F-Droid repo and install Node Remote:
+**Phone.** Add the F-Droid repo — this link carries the repo path *and* the signing
+fingerprint, so F-Droid can verify the repo rather than trust it:
 
 ```
-https://xalisher.github.io/fdroid
+https://xalisher.github.io/fdroid/repo?fingerprint=9283C4E3DAB31E68675B643AE38222358541431AD07295B6DF4A4C6D2ACCCF32
 ```
 
-Fingerprint `9283C4E3DAB31E68675B643AE38222358541431AD07295B6DF4A4C6D2ACCCF32`.
+The bare `https://xalisher.github.io/fdroid` is the human-readable landing page — opening
+it in F-Droid does nothing. The Basecamp pane shows this same link as a QR.
 
 ## Pairing
 

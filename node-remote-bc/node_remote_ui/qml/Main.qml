@@ -32,7 +32,17 @@ Item {
     // Two ways to get the app. Both are shown as a scannable code, but only ONE at a
     // time: two QRs side by side is an invitation to scan the wrong one, and neither is
     // labelled once it is in a camera viewfinder.
-    readonly property string fdroidUrl: "https://xalisher.github.io/fdroid"
+    // The URL that ADDS THE REPO in the F-Droid app — matching what peers.tech links to.
+    // Two parts are load-bearing and were both missing before:
+    //   /repo         — the bare .../fdroid is a human landing page; F-Droid needs the repo
+    //                   path, and scanning the landing page simply does nothing.
+    //   ?fingerprint= — pins the repo's signing key, so a substituted repo is rejected
+    //                   rather than silently trusted. Without it F-Droid cannot verify who
+    //                   it is talking to, which for a QR someone scans off a screen is the
+    //                   whole point.
+    readonly property string fdroidUrl:
+        "https://xalisher.github.io/fdroid/repo?fingerprint=" +
+        "9283C4E3DAB31E68675B643AE38222358541431AD07295B6DF4A4C6D2ACCCF32"
     readonly property string githubUrl: "https://github.com/xAlisher/node-remote/releases/latest"
     property int sourceTab: 0        // 0 = F-Droid, 1 = GitHub
 
@@ -236,7 +246,7 @@ Item {
                     QrCard {
                         Layout.fillWidth: true
                         payload: root.sourceUrl
-                        frameSize: 200
+                        frameSize: 0            // auto — see QrCard.effectiveFrame
                         showSaveButton: false
                         cardBg: root.surface2
                         titleColor: root.textCol
@@ -357,6 +367,7 @@ Item {
 
                         QrCard {
                             Layout.fillWidth: true
+                            frameSize: 0    // auto
                             // An expired code still scans — dim it so it reads as dead.
                             opacity: root.secsLeft > 0 ? 1.0 : 0.35
                             title: "Scan with Node Remote"

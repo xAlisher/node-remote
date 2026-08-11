@@ -31,9 +31,15 @@ Item {
     property bool   showSaveButton: true
     // Plain path, not StandardPaths — see the dropped Qt.labs.platform import.
     property string saveDir: "/tmp"
-    // Frame edge in px. 320 fits a 57-module pairing URI at 5 physical px per module;
-    // short URLs encode smaller and read fine in less space.
-    property int    frameSize: 320
+    // Frame edge in px, or 0 for AUTO. Auto is the right default: payload length drives
+    // the module count, and a frame fixed for one payload silently under-sizes another.
+    // The F-Droid repo URL with its fingerprint is ~110 chars — at the 200px frame that was
+    // hardcoded for short links it would have rendered ~3 physical pixels per module, which
+    // is below what a phone camera reliably resolves off a monitor.
+    property int    frameSize: 0
+    readonly property int effectiveFrame:
+        frameSize > 0 ? frameSize
+                      : Math.max(160, Math.min(360, card._n * 5 + 32))   // >= 5 px per module
 
     // ── Theme (override to match the host module) ─────────────────────────
     property color cardBg:      "#171717"
@@ -141,8 +147,8 @@ Item {
                     id: frame
                     visible: card._n > 0
                     Layout.alignment: Qt.AlignHCenter
-                    Layout.preferredWidth: card.frameSize
-                    Layout.preferredHeight: card.frameSize
+                    Layout.preferredWidth: card.effectiveFrame
+                    Layout.preferredHeight: card.effectiveFrame
                     radius: 8
                     color: card.qrBg
                     readonly property int cell: card._n > 0 ? Math.max(1, Math.floor((width - 32) / card._n)) : 1
