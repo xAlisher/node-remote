@@ -50,7 +50,10 @@ quint16 HttpSurface::listen()
             return QHttpServerResponse("application/json",
                                        QByteArrayLiteral(R"({"error":"unauthorized"})"),
                                        QHttpServerResponder::StatusCode::Unauthorized);
-        return QHttpServerResponse("application/json", m_probe->statusJson());
+        // Fall back to the probe only if no richer handler was injected, so a build that
+        // forgets to wire it degrades to chain-only status rather than to nothing.
+        return QHttpServerResponse("application/json",
+                                   m_status ? m_status() : m_probe->statusJson());
     });
 
     // Control routes. POST only — a GET would let a stray link or a prefetching client

@@ -220,23 +220,42 @@ QByteArray NodeProbe::statusJson()
     // core_info is null for an Edge node — that is normal, not an error, and the 1-click
     // module's vocabulary for it is Edge vs Core (BlendStatus enum:
     // Off/WaitingForOnline/Edge/Core/Broadcast/NodeError/BlendError/Unknown).
-    bool blendOk = false;
-    const QByteArray blend = get(apiBase() + "/blend/info", 1500, &blendOk);
-    if (blendOk) {
-        const QJsonObject b = QJsonDocument::fromJson(blend).object();
-        const QJsonValue core = b.value(QStringLiteral("core_info"));
-        if (core.isNull() || core.isUndefined()) {
-            out["blendStatus"] = QStringLiteral("Edge");
-            out["blendPeers"]  = 0;
-        } else {
-            const QJsonArray peers =
-                core.toObject().value(QStringLiteral("current_epoch_peers")).toArray();
-            out["blendStatus"] = QStringLiteral("Core");
-            out["blendPeers"]  = peers.size();
-        }
-        out["blendNodeId"] = b.value(QStringLiteral("node_id"));
+    // Blend, following logos_node_1click_backend::refreshBlendStatus() rather than asking
+    // /blend/info first and calling a non-answer "Unknown".
+    //
+    // Blend CANNOT run until the chain is Online — 1-click's own comment says so, and its
+    // WaitingForOnline state renders as "Blend inactive" (gray), not "unknown". Ours asked
+    // the API unconditionally, and while Bootstrapping that API does not answer, so every
+    // syncing node reported "Unknown" — which reads as a fault when nothing is wrong. The
+    // node is simply not blending yet, and that is a fact we KNOW, not one we are missing.
+    //
+    // "Unknown" is now reserved for its real meaning: the node is Online, so blend should
+    // be answering, and it did not.
+    if (state.compare(QLatin1String("Online"), Qt::CaseInsensitive) != 0) {
+        out["blendStatus"] = QStringLiteral("Inactive");
+        out["blendNote"]   = QStringLiteral("waiting for the node to reach Online");
     } else {
-        out["blendStatus"] = QStringLiteral("Unknown");
+        bool blendOk = false;
+        const QByteArray blend = get(apiBase() + "/blend/info", 1500, &blendOk);
+        if (blendOk) {
+            const QJsonObject b = QJsonDocument::fromJson(blend).object();
+            const QJsonValue core = b.value(QStringLiteral("core_info"));
+            if (core.isNull() || core.isUndefined()) {
+                // Online and not core = edge by default, exactly as 1-click concludes.
+                out["blendStatus"] = QStringLiteral("Edge");
+                out["blendPeers"]  = 0;
+                out["blendNote"]   = QStringLiteral("your proposals are being mixed");
+            } else {
+                const QJsonArray peers =
+                    core.toObject().value(QStringLiteral("current_epoch_peers")).toArray();
+                out["blendStatus"] = QStringLiteral("Core");
+                out["blendPeers"]  = peers.size();
+                out["blendNote"]   = QStringLiteral("%1 mix peers this epoch").arg(peers.size());
+            }
+            out["blendNodeId"] = b.value(QStringLiteral("node_id"));
+        } else {
+            out["blendStatus"] = QStringLiteral("Unknown");
+        }
     }
 
     // Peers/connections use logos_node_1click's EXACT derivation

@@ -43,6 +43,11 @@ public:
     // Control handlers, injected by the impl so this class never includes logos_sdk.h.
     // Each returns the JSON body to send back.
     using Handler = std::function<QByteArray()>;
+    // The status route MUST go through this when set. NodeProbe alone cannot produce
+    // `balance`: the wallet RPCs live on blockchain_module, and HttpSurface deliberately
+    // knows nothing about it. Without this the phone got probe-only status and balance
+    // was structurally unreachable — the merging code existed and nothing ever called it.
+    void setStatusHandler(Handler h) { m_status = std::move(h); }
     void setStartHandler(Handler h) { m_start = std::move(h); }
     void setBlocksHandler(Handler h) { m_blocks = std::move(h); }
     void setWipeHandler(Handler h) { m_wipe = std::move(h); }
@@ -53,6 +58,7 @@ public:
 private:
     bool authorized(const QHttpServerRequest& req) const;
 
+    Handler m_status;
     Handler m_start;
     Handler m_blocks;
     Handler m_wipe;

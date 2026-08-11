@@ -53,6 +53,9 @@ NodeRemoteImpl::NodeRemoteImpl()
 
     // Wire the control routes. HttpSurface deliberately knows nothing about
     // blockchain_module — it just calls these.
+    m_http->setStatusHandler([this] {
+        return QByteArray::fromStdString(getNodeStatus());
+    });
     m_http->setStartHandler([this] {
         return QByteArray::fromStdString(startNode("", "logos.test"));
     });
