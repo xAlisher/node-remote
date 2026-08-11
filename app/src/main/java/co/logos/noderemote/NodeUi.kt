@@ -3,6 +3,7 @@ package co.logos.noderemote
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -373,7 +374,9 @@ private fun Empty(text: String) {
  * phone alerts on the same things the desktop indicator turns red for.
  */
 @Composable
-fun SettingsPage(settings: Settings, onChanged: () -> Unit, onDisconnect: () -> Unit) {
+fun SettingsPage(settings: Settings, onChanged: () -> Unit, onDisconnect: () -> Unit,
+                 onWipe: () -> Unit = {}, onRegenerate: () -> Unit = {},
+                 nodeRunning: Boolean = false) {
     var master by remember { mutableStateOf(settings.showNotifications) }
     var priv by remember { mutableStateOf(settings.privateNotifications) }
     // Recomposition key: toggling a per-event switch has to redraw the row it lives in.
@@ -413,6 +416,36 @@ fun SettingsPage(settings: Settings, onChanged: () -> Unit, onDisconnect: () -> 
                     onCheck = { settings.setEnabled(e, it); rev++; onChanged() },
                 )
             }
+        }
+
+        Spacer(Modifier.height(24.dp))
+        HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+        Spacer(Modifier.height(16.dp))
+
+        Text("Node maintenance", style = MaterialTheme.typography.labelLarge,
+             color = MaterialTheme.colorScheme.onSurfaceVariant,
+             modifier = Modifier.padding(bottom = 8.dp))
+
+        ActionRow(
+            title = "Regenerate config",
+            blurb = "Rewrites user_config.yaml. The current one is backed up first — it " +
+                    "holds your leader key.",
+            enabled = !nodeRunning,
+            onClick = onRegenerate,
+        )
+        ActionRow(
+            title = "Wipe database",
+            blurb = "Deletes the chain database and re-syncs from genesis. Your wallet keys " +
+                    "and config are kept.",
+            enabled = !nodeRunning,
+            danger = true,
+            onClick = onWipe,
+        )
+        if (nodeRunning) {
+            Text("Stop the node to use these.",
+                 style = MaterialTheme.typography.labelSmall,
+                 color = MaterialTheme.colorScheme.onSurfaceVariant,
+                 modifier = Modifier.padding(top = 4.dp))
         }
 
         Spacer(Modifier.height(28.dp))
@@ -480,6 +513,27 @@ fun GearGlyph(tint: Color, size: Dp = 22.dp) {
             drawPath(outline, tint, style = stroke)
             drawPath(hub, tint, style = stroke)
         }
+    }
+}
+
+@Composable
+private fun ActionRow(title: String, blurb: String, enabled: Boolean,
+                      danger: Boolean = false, onClick: () -> Unit) {
+    val tint = when {
+        !enabled -> LogosColors.gray400
+        danger -> LogosColors.red500
+        else -> LogosColors.white
+    }
+    Row(Modifier.fillMaxWidth()
+            .clickable(enabled = enabled, onClick = onClick)
+            .padding(vertical = 12.dp),
+        verticalAlignment = Alignment.CenterVertically) {
+        Column(Modifier.weight(1f).padding(end = 12.dp)) {
+            Text(title, fontWeight = FontWeight.Medium, color = tint)
+            Text(blurb, style = MaterialTheme.typography.bodySmall,
+                 color = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
+        Text("\u203a", color = tint, style = MaterialTheme.typography.titleLarge)
     }
 }
 

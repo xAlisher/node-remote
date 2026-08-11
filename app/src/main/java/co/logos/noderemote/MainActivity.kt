@@ -6,7 +6,10 @@ import android.net.NetworkCapabilities
 import android.net.Uri
 import android.os.Bundle
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
+import com.journeyapps.barcodescanner.ScanContract
+import com.journeyapps.barcodescanner.ScanOptions
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
@@ -81,6 +84,7 @@ class MainActivity : ComponentActivity() {
         // OBSERVED state — gating the poll loop on `link` let one transient failure set
         // DISCONNECTED and stop the loop forever, with no way back short of a restart.
         var wantConnected by remember { mutableStateOf(false) }
+        var showEnterUri by remember { mutableStateOf(false) }
 
         val scope = rememberCoroutineScope()
         val onion = remember(uri) { parse(uri)?.first.orEmpty() }
@@ -102,6 +106,21 @@ class MainActivity : ComponentActivity() {
                 .onFailure { note = "client auth failed: ${it.message}" }
             note = ""
             link = Link.CONNECTED
+        }
+
+        // ZXing scanner. Returns the raw QR text; the launcher handles the camera
+        // permission prompt itself, so there is no separate permission dance.
+        val scanner = rememberLauncherForActivityResult(ScanContract()) { res ->
+            val raw = res.contents
+            if (raw.isNullOrBlank()) { note = "Scan cancelled" }
+            else if (parse(raw) == null) { note = "That QR isn't a Node Remote pairing code" }
+            else {
+                uri = raw.trim()
+                // The token rides in the URI's t= field; the manual path still accepts one.
+                token = Uri.parse(raw.trim()).getQueryParameter("t").orEmpty()
+                note = ""
+                scope.launch { connect() }
+            }
         }
 
         suspend fun refresh() {
@@ -128,7 +147,10 @@ class MainActivity : ComponentActivity() {
 
         suspend fun control(path: String) {
             busy = true
-            note = if (path == "stop") "stopping node…" else "starting node…"
+            note = when (path) {
+                "stop" -> "stopping node…"; "start" -> "starting node…"
+                "wipe" -> "wiping database…"; else -> "regenerating config…"
+            }
             val r = withContext(Dispatchers.IO) {
                 runCatching {
                     val req = Request.Builder()
@@ -183,16 +205,36 @@ class MainActivity : ComponentActivity() {
         confirm?.let { action ->
             AlertDialog(
                 onDismissRequest = { confirm = null },
-                title = { Text(if (action == "stop") "Stop node?" else "Start node?") },
+                title = {
+                    Text(when (action) {
+                        "stop" -> "Stop node?"
+                        "start" -> "Start node?"
+                        "wipe" -> "Wipe database?"
+                        else -> "Regenerate config?"
+                    })
+                },
                 text = {
-                    Text(if (action == "stop")
-                        "The node will stop producing and following blocks until you start it again."
-                    else "The node will start with the config it is already set up with.")
+                    Text(when (action) {
+                        "stop" -> "The node will stop producing and following blocks until you start it again."
+                        "start" -> "The node will start with the config it is already set up with."
+                        "wipe" -> "Deletes the chain database and consensus state. The node re-syncs " +
+                                  "from genesis, which takes a while. Your wallet keys and config are kept."
+                        else -> "Rewrites user_config.yaml from the module's defaults. The current file " +
+                                "is backed up first, because it holds your leader key."
+                    })
                 },
                 confirmButton = {
-                    TextButton(onClick = { confirm = null; scope.launch { control(action) } }) {
-                        Text(if (action == "stop") "Stop node" else "Start node",
-                             color = if (action == "stop") LogosColors.red500 else LogosColors.green500)
+                    TextButton(onClick = {
+                        val a = action
+                        confirm = null
+                        scope.launch { control(if (a == "regenerate") "regenerate" else a) }
+                    }) {
+                        Text(when (action) {
+                                 "stop" -> "Stop node"; "start" -> "Start node"
+                                 "wipe" -> "Wipe"; else -> "Regenerate"
+                             },
+                             color = if (action == "start") LogosColors.green500
+                                     else LogosColors.red500)
                     }
                 },
                 dismissButton = {
@@ -204,6 +246,11 @@ class MainActivity : ComponentActivity() {
         Scaffold(topBar = {
             TopAppBar(
                 navigationIcon = {
+                    if (!connected && showEnterUri) {
+                        IconButton(onClick = { showEnterUri = false; note = "" }) {
+                            ChevronLeftGlyph(LogosColors.white)
+                        }
+                    }
                     if (showSettings) {
                         IconButton(onClick = { showSettings = false }) {
                             ChevronLeftGlyph(LogosColors.white)
@@ -212,9 +259,14 @@ class MainActivity : ComponentActivity() {
                 },
                 title = {
                     Column(verticalArrangement = Arrangement.Center) {
-                        Text(if (showSettings) "Settings" else "Node Remote",
-                             fontWeight = FontWeight.Bold)
-                        if (showSettings) return@Column
+                        val t = when {
+                            showSettings -> "Settings"
+                            !connected && showEnterUri -> "Enter URI"
+                            !connected -> ""            // welcome carries its own title
+                            else -> "Node Remote"
+                        }
+                        if (t.isNotEmpty()) Text(t, fontWeight = FontWeight.Bold)
+                        if (showSettings || !connected) return@Column
                         // Secondary line: how the PHONE is doing. Kept separate from the
                         // node's own state pill so it is always clear which one is unhappy.
                         val (txt, col) = when (link) {
@@ -250,21 +302,29 @@ class MainActivity : ComponentActivity() {
         }) { pad ->
             Column(Modifier.padding(pad).fillMaxSize()) {
 
-                if (!connected) {
-                    Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                        Text("Pair with the QR from Basecamp. Nobody without that key can " +
-                             "reach — or even see — your node.",
-                             style = MaterialTheme.typography.bodySmall,
-                             color = MaterialTheme.colorScheme.onSurfaceVariant)
-                        OutlinedTextField(uri, { uri = it }, label = { Text("lgnode:// pairing URI") },
-                                          modifier = Modifier.fillMaxWidth(), maxLines = 4)
-                        OutlinedTextField(token, { token = it }, label = { Text("device token") },
-                                          modifier = Modifier.fillMaxWidth(), singleLine = true)
-                        Button(onClick = { scope.launch { connect() } }) { Text("Connect") }
-                        if (note.isNotEmpty()) Text(note, style = MaterialTheme.typography.bodySmall)
-                    }
+                if (!connected && showEnterUri) {
+                    EnterUriScreen(uri, { u, t ->
+                        uri = u; token = t
+                        scope.launch { connect() }
+                    }, note)
+                } else if (!connected) {
+                    WelcomeScreen(
+                        onScan = {
+                            scanner.launch(ScanOptions().apply {
+                                setDesiredBarcodeFormats(ScanOptions.QR_CODE)
+                                setPrompt("Scan the code shown in Basecamp")
+                                setBeepEnabled(false)
+                                setOrientationLocked(false)
+                            })
+                        },
+                        onEnterUri = { showEnterUri = true },
+                        note = note,
+                    )
                 } else if (showSettings) {
                     SettingsPage(
+                        nodeRunning = running,
+                        onWipe = { confirm = "wipe" },
+                        onRegenerate = { confirm = "regenerate" },
                         settings = Settings(this@MainActivity),
                         onChanged = {
                             // Restart the watcher so a change takes effect now rather than

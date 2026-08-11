@@ -56,4 +56,9 @@ dependencies {
 
     implementation "org.jetbrains.kotlinx:kotlinx-coroutines-android:1.10.2"
     implementation "com.squareup.okhttp3:okhttp:4.12.0"
+
+    // QR scanning. ZXing, NOT ML Kit: this app targets F-Droid, which requires FOSS, and
+    // ML Kit ships proprietary blobs. ZXing also works with no Play Services at all, which
+    // matters on GrapheneOS.
+    implementation "com.journeyapps:zxing-android-embedded:4.3.0"
 }
