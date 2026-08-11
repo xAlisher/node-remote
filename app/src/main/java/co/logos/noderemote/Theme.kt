@@ -27,6 +27,7 @@ object LogosColors {
     val green500  = Color(0xFF49F563) // success
     val red500    = Color(0xFFFB3748) // error
     val yellow500 = Color(0xFFFFA726) // warning
+    val blue400   = Color(0xFF4A90E2) // info — the module's blend colour
 }
 
 private val Scheme = darkColorScheme(
