@@ -1,0 +1,14 @@
+buildscript {
+    ext {
+        minSdkVersion = 26          // kmp-tor exec path needs the nativeLibraryDir trick (API 28+ blocks exec from data dir)
+        compileSdkVersion = 36
+        targetSdkVersion = 36
+        kotlinVersion = "2.1.20"
+    }
+    repositories { google(); mavenCentral() }
+    dependencies {
+        classpath("com.android.tools.build:gradle:8.13.0")
+        classpath("org.jetbrains.kotlin:kotlin-gradle-plugin:2.1.20")
+        classpath("org.jetbrains.kotlin:compose-compiler-gradle-plugin:2.1.20")
+    }
+}

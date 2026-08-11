@@ -1,0 +1,6 @@
+<resources>
+    <!-- Adaptive-icon background. Near-black rather than the app's gray900 (#171717) so
+         the launcher's own drop shadow still separates the icon from a dark wallpaper.
+         Same value Peers uses, for a consistent house look on the same home screen. -->
+    <color name="ic_launcher_background">#0A0A0A</color>
+</resources>
