@@ -22,7 +22,9 @@ if(DEFINED ENV{LOGOS_MODULE_BUILDER_ROOT})
     find_package(Qt6 REQUIRED COMPONENTS HttpServer)
 
     file(READ "${CMAKE_CURRENT_SOURCE_DIR}/metadata.json" METADATA_JSON)
-    string(JSON MODULE_NAME GET ${METADATA_JSON} name)
+    # MUST be quoted: an unquoted ${METADATA_JSON} is expanded as a CMake LIST, which
+    # corrupts the JSON and fails with the misleading "logos_module: NAME is required".
+    string(JSON MODULE_NAME GET "${METADATA_JSON}" name)
 
     logos_module(
         NAME ${MODULE_NAME}
@@ -42,7 +44,9 @@ endif()
 find_package(Qt6 REQUIRED COMPONENTS HttpServer)
 
 file(READ "${CMAKE_CURRENT_SOURCE_DIR}/metadata.json" METADATA_JSON)
-string(JSON MODULE_NAME GET ${METADATA_JSON} name)
+# MUST be quoted: an unquoted ${METADATA_JSON} is expanded as a CMake LIST, which
+    # corrupts the JSON and fails with the misleading "logos_module: NAME is required".
+    string(JSON MODULE_NAME GET "${METADATA_JSON}" name)
 
 logos_module(
     NAME ${MODULE_NAME}
