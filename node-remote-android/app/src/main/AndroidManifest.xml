@@ -15,7 +15,14 @@
         android:extractNativeLibs="true"
         android:usesCleartextTraffic="true"
         android:theme="@style/Theme.NodeRemote">
-        <activity android:name=".MainActivity" android:exported="true" android:label="Node Remote">
+        <!-- Portrait-only, like the scanner. This is a status panel read one-handed; there
+             is no landscape layout, and a rotation destroys and recreates the activity —
+             which, until the pairing was persisted, dropped a paired phone back to the
+             welcome screen. configChanges keeps us alive across the remaining ones
+             (keyboard, screen size) instead of rebuilding the whole tree and reconnecting. -->
+        <activity android:name=".MainActivity" android:exported="true" android:label="Node Remote"
+                  android:screenOrientation="portrait"
+                  android:configChanges="orientation|screenSize|screenLayout|keyboardHidden|smallestScreenSize">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN"/>
                 <category android:name="android.intent.category.LAUNCHER"/>
