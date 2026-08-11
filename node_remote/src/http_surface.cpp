@@ -47,6 +47,29 @@ quint16 HttpSurface::listen()
         return QHttpServerResponse("application/json", m_probe->statusJson());
     });
 
+    // Control routes. POST only — a GET would let a stray link or a prefetching client
+    // stop someone's node, and browsers/proxies treat GET as safe to retry.
+    auto control = [this](const Handler& h, const QHttpServerRequest& req) {
+        if (!authorized(req))
+            return QHttpServerResponse("application/json",
+                                       QByteArrayLiteral(R"({"error":"unauthorized"})"),
+                                       QHttpServerResponder::StatusCode::Unauthorized);
+        if (!h)
+            return QHttpServerResponse("application/json",
+                                       QByteArrayLiteral(R"({"error":"not wired"})"),
+                                       QHttpServerResponder::StatusCode::ServiceUnavailable);
+        return QHttpServerResponse("application/json", h());
+    };
+
+    m_server->route("/v1/start", QHttpServerRequest::Method::Post,
+                    [this, control](const QHttpServerRequest& req) {
+                        return control(m_start, req);
+                    });
+    m_server->route("/v1/stop", QHttpServerRequest::Method::Post,
+                    [this, control](const QHttpServerRequest& req) {
+                        return control(m_stop, req);
+                    });
+
     m_tcp = new QTcpServer(this);
     // Loopback ONLY. The onion is the sole external path; binding Any would publish the
     // node's control surface to the LAN.

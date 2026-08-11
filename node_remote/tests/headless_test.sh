@@ -22,6 +22,7 @@ set -uo pipefail
 MOD=node_remote
 HERE="$(cd "$(dirname "$0")/.." && pwd)"
 SO="$HERE/result/lib/${MOD}_plugin.so"
+source "$(dirname "$0")/lib.sh"
 LOGOSCORE=$(find /nix/store -maxdepth 4 -name logoscore -path '*/bin/*' 2>/dev/null | head -1)
 TORSOCKS=$(command -v torsocks || true)
 
@@ -47,14 +48,7 @@ cleanup() {
 trap cleanup EXIT
 TMPDIR_TOR="${TMPDIR:-/tmp}/node_remote/tor"
 
-mkdir -p "$MDIR/$MOD"
-cp "$SO" "$MDIR/$MOD/"
-cat > "$MDIR/$MOD/manifest.json" <<JSON
-{"name":"$MOD","version":"0.1.0","type":"core","manifestVersion":"0.2.0",
- "main":{"linux-amd64":"${MOD}_plugin.so","linux-amd64-dev":"${MOD}_plugin.so","linux-x86_64-dev":"${MOD}_plugin.so"},
- "dependencies":[]}
-JSON
-echo linux-amd64-dev > "$MDIR/$MOD/variant"
+stage_modules "$MDIR" "$SO"
 
 # Start a fresh, isolated daemon.
 "$LOGOSCORE" -D -m "$MDIR" > /tmp/node_remote-daemon.log 2>&1 &

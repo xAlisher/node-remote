@@ -26,11 +26,20 @@ public:
     quint16 port() const { return m_port; }
 
     // Bearer token required on every /v1 route except /v1/ping.
-    // E1: supplied via NODE_REMOTE_TOKEN. E2 replaces this with the device store.
+    // E1: supplied via NODE_REMOTE_TOKEN. Later replaced by the device store.
     void setToken(const QString& t) { m_token = t; }
+
+    // Control handlers, injected by the impl so this class never includes logos_sdk.h.
+    // Each returns the JSON body to send back.
+    using Handler = std::function<QByteArray()>;
+    void setStartHandler(Handler h) { m_start = std::move(h); }
+    void setStopHandler(Handler h)  { m_stop  = std::move(h); }
 
 private:
     bool authorized(const QHttpServerRequest& req) const;
+
+    Handler m_start;
+    Handler m_stop;
 
     QHttpServer* m_server = nullptr;
     QTcpServer*  m_tcp    = nullptr;

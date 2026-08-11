@@ -4,6 +4,11 @@
 #include "node_probe.h"
 #include "onion_service.h"
 
+// The typed wrapper for blockchain_module. Generated at build time from the flake input
+// whose attribute name matches the dependency string EXACTLY (see flake.nix) — there is
+// no prebuilt SDK header for this module.
+#include "logos_sdk.h"
+
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
@@ -29,6 +34,15 @@ NodeRemoteImpl::NodeRemoteImpl()
     });
     QObject::connect(m_onion, &OnionService::failed, m_onion, [this](const QString& c) {
         onionFailed(c.toStdString());
+    });
+
+    // Wire the control routes. HttpSurface deliberately knows nothing about
+    // blockchain_module — it just calls these.
+    m_http->setStartHandler([this] {
+        return QByteArray::fromStdString(startNode("", "logos.test"));
+    });
+    m_http->setStopHandler([this] {
+        return QByteArray::fromStdString(stopNode());
     });
 }
 
@@ -90,6 +104,37 @@ std::string NodeRemoteImpl::getRemoteInfo()
 std::string NodeRemoteImpl::getNodeStatus()
 {
     return g_probe->statusJson().toStdString();
+}
+
+std::string NodeRemoteImpl::startNode(const std::string& configPath,
+                                      const std::string& deployment)
+{
+    QJsonObject r;
+    // Fall back to the same config the desktop UI uses, so a phone-initiated start
+    // brings up the SAME node the user already configured rather than a default one.
+    const std::string cfg = configPath.empty()
+                                ? g_probe->userConfigPath().toStdString()
+                                : configPath;
+    if (cfg.empty()) {
+        r["ok"] = false;
+        r["error"] = "no user_config.yaml found — configure the node on the desktop first";
+        return dump(r);
+    }
+
+    const StdLogosResult res = modules().blockchain_module.start(cfg, deployment);
+    r["ok"] = res.success;
+    if (!res.success) r["error"] = QString::fromStdString(res.error);
+    r["configPath"] = QString::fromStdString(cfg);
+    return dump(r);
+}
+
+std::string NodeRemoteImpl::stopNode()
+{
+    const StdLogosResult res = modules().blockchain_module.stop();
+    QJsonObject r;
+    r["ok"] = res.success;
+    if (!res.success) r["error"] = QString::fromStdString(res.error);
+    return dump(r);
 }
 
 std::string NodeRemoteImpl::authorizeClient(const std::string& name,

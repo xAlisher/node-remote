@@ -42,6 +42,16 @@ public:
     /// so it is testable headlessly via `logoscore -c` with no Tor and no HTTP.
     std::string getNodeStatus();
 
+    /// Start the blockchain node. `configPath` empty → resolve the same user_config.yaml
+    /// the desktop UI uses. Returns {"ok":bool,"error":"..."}.
+    /// Deliberately synchronous-looking to the caller but non-blocking underneath:
+    /// blockchain_module.start can take tens of seconds, and blocking the module's
+    /// event loop would stall the HTTP surface (and the phone's poll) with it.
+    std::string startNode(const std::string& configPath, const std::string& deployment);
+
+    /// Stop the blockchain node. Returns {"ok":bool,"error":"..."}.
+    std::string stopNode();
+
     /// Authorize a paired client. `x25519PubBase32` is the client's public key.
     /// Returns {"ok":bool}. Takes effect on the next restartOnion().
     std::string authorizeClient(const std::string& name, const std::string& x25519PubBase32);
