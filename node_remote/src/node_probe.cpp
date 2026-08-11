@@ -5,6 +5,7 @@
 #include <QFile>
 #include <QFileInfo>
 #include <QJsonDocument>
+#include <QJsonArray>
 #include <QJsonObject>
 #include <QNetworkReply>
 #include <QNetworkRequest>
@@ -149,6 +150,29 @@ QByteArray NodeProbe::statusJson()
     out["status"] = state.compare(QLatin1String("Online"), Qt::CaseInsensitive) == 0
                         ? QStringLiteral("Running")
                         : (state.isEmpty() ? QStringLiteral("Starting") : state);
+
+    // Blend: /blend/info tells us whether this node is a Core (mix-relaying) node.
+    // core_info is null for an Edge node — that is normal, not an error, and the 1-click
+    // module's vocabulary for it is Edge vs Core (BlendStatus enum:
+    // Off/WaitingForOnline/Edge/Core/Broadcast/NodeError/BlendError/Unknown).
+    bool blendOk = false;
+    const QByteArray blend = get(apiBase() + "/blend/info", 1500, &blendOk);
+    if (blendOk) {
+        const QJsonObject b = QJsonDocument::fromJson(blend).object();
+        const QJsonValue core = b.value(QStringLiteral("core_info"));
+        if (core.isNull() || core.isUndefined()) {
+            out["blendStatus"] = QStringLiteral("Edge");
+            out["blendPeers"]  = 0;
+        } else {
+            const QJsonArray peers =
+                core.toObject().value(QStringLiteral("current_epoch_peers")).toArray();
+            out["blendStatus"] = QStringLiteral("Core");
+            out["blendPeers"]  = peers.size();
+        }
+        out["blendNodeId"] = b.value(QStringLiteral("node_id"));
+    } else {
+        out["blendStatus"] = QStringLiteral("Unknown");
+    }
 
     bool netOk = false;
     const QByteArray net = get(apiBase() + "/network/info", 1500, &netOk);
