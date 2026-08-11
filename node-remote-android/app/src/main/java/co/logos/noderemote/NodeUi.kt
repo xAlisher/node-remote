@@ -496,13 +496,20 @@ fun SettingsPage(settings: Settings, onChanged: () -> Unit, onDisconnect: () -> 
 
         SwitchRow(
             title = "Show notifications",
-            blurb = "Alerts while Node Remote watches in the background",
+            // Name the mechanism, because it is visible and it uses battery: turning this
+            // on runs a foreground service, which Android REQUIRES to show a permanent
+            // notification. People who find that notification and cannot explain it come
+            // away thinking the app is misbehaving.
+            blurb = "Runs a background watcher so alerts arrive with the app closed. " +
+                    "Android shows a permanent \"Node Remote\" notification while it runs. " +
+                    "Off means no watcher and no battery use.",
             checked = master,
             onCheck = { master = it; settings.showNotifications = it; onChanged() },
         )
         SwitchRow(
             title = "Private notifications",
-            blurb = "Hide the contents on the lock screen",
+            blurb = "Alerts show only the app name on the lock screen — not your node's " +
+                    "state, height or balance.",
             checked = priv,
             enabled = master,
             onCheck = { priv = it; settings.privateNotifications = it; onChanged() },
@@ -553,8 +560,9 @@ fun SettingsPage(settings: Settings, onChanged: () -> Unit, onDisconnect: () -> 
         )
         ActionRow(
             title = "Wipe database",
-            blurb = "Deletes the chain database and re-syncs from genesis. Your wallet keys " +
-                    "and config are kept.",
+            blurb = "Deletes the chain database and consensus state, then re-downloads the " +
+                    "whole chain from genesis — hours, not minutes. keystore.yaml and " +
+                    "user_config.yaml are kept, so your wallet and settings survive.",
             enabled = !nodeRunning,
             danger = true,
             onClick = onWipe,
@@ -577,7 +585,12 @@ fun SettingsPage(settings: Settings, onChanged: () -> Unit, onDisconnect: () -> 
             colors = ButtonDefaults.outlinedButtonColors(contentColor = LogosColors.red500),
         ) { Text("Disconnect", fontWeight = FontWeight.Medium) }
 
-        Text("Forgets this node. You'll need to scan a new QR from Basecamp to pair again.",
+        // The important half was missing. Disconnect clears this phone's copy of the
+        // pairing — it does NOT revoke the key on the desktop. Someone who thought this
+        // secured a lost phone would be wrong, and would not find out.
+        Text("Forgets the pairing on this phone; you'll need a new QR from Basecamp to pair " +
+             "again. It does NOT revoke this device on the desktop — if the phone is lost, " +
+             "press Disconnect in the Node Remote app in Basecamp instead.",
              style = MaterialTheme.typography.labelSmall,
              color = MaterialTheme.colorScheme.onSurfaceVariant,
              modifier = Modifier.padding(top = 8.dp, bottom = 24.dp))
