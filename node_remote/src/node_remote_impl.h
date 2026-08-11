@@ -78,6 +78,17 @@ public:
     /// the 120s window would be spent waiting for the descriptor upload.
     std::string beginPairing(const std::string& label);
 
+    /// Encode `payload` as a QR matrix. Returns {"ok":true,"n":<size>,"cells":[bool…]},
+    /// row-major, n*n entries, true = dark.
+    ///
+    /// This lives HERE rather than calling the separate `qr` core module on purpose.
+    /// The QML pane's cross-module call to qr.generateCard failed on a machine where the
+    /// qr module was installed and loaded, which made the pairing code unrenderable —
+    /// and a pairing surface that depends on a second module being present, loaded AND
+    /// reachable has three ways to show the user nothing. The encoder is ~1300 vendored
+    /// lines with no runtime dependencies, so bundling it removes all three.
+    std::string generateQr(const std::string& payload);
+
     /// Exercise the pairing primitives against known answers. Returns a JSON report.
     /// Exists so the crypto is provable headlessly, with no phone and no Tor.
     std::string selfTest();

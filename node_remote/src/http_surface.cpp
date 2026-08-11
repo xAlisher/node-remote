@@ -2,6 +2,7 @@
 
 #include "node_probe.h"
 
+#include <QDateTime>
 #include <QHostAddress>
 #include <QHttpServerRequest>
 #include <QHttpServerResponse>
@@ -24,7 +25,12 @@ bool HttpSurface::authorized(const QHttpServerRequest& req) const
     // byte by byte to anyone who can reach the onion (i.e. an authorized-but-revoked peer).
     unsigned char diff = 0;
     for (int i = 0; i < h.size(); ++i) diff |= static_cast<unsigned char>(h[i] ^ want[i]);
-    return diff == 0;
+    if (diff != 0) return false;
+
+    // Stamped only on success, so a wrong-token caller cannot make the desktop claim a
+    // device is connected. This is the desktop's only evidence that a phone exists.
+    m_lastAuthedAt = QDateTime::currentSecsSinceEpoch();
+    return true;
 }
 
 quint16 HttpSurface::listen()

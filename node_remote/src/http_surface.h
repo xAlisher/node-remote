@@ -29,6 +29,17 @@ public:
     // E1: supplied via NODE_REMOTE_TOKEN. Later replaced by the device store.
     void setToken(const QString& t) { m_token = t; }
 
+    // Unix seconds of the last request that PASSED the bearer check, or 0 if no paired
+    // device has ever spoken to us on this run.
+    //
+    // This exists because the desktop cannot otherwise tell pairing apart from paired.
+    // Minting a client-auth key is step one of pairing — the key file appears the moment
+    // the QR is rendered, long before any phone has scanned it. Treating that file as
+    // proof of a connection made the UI declare "Connected" and hide the QR the instant
+    // it was generated, so the code could never be scanned.
+    qint64 lastAuthedAt() const { return m_lastAuthedAt; }
+    void   forgetLastAuthed()   { m_lastAuthedAt = 0; }
+
     // Control handlers, injected by the impl so this class never includes logos_sdk.h.
     // Each returns the JSON body to send back.
     using Handler = std::function<QByteArray()>;
@@ -54,4 +65,6 @@ private:
     NodeProbe*   m_probe  = nullptr;
     QString      m_token;
     quint16      m_port   = 0;
+    // Written from authorized(), which is const — hence mutable, not a design smell.
+    mutable qint64 m_lastAuthedAt = 0;
 };

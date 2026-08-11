@@ -13,12 +13,11 @@ import QtQuick.Controls
 //         payload:     someStringToEncode      // auto-generates when it changes
 //     }
 //
-// Requires the `qr` core module installed. Declare it in your metadata.json:
-//     "dependencies": ["qr"]
+// Encoding is done by node_remote's own generateQr — no separate `qr` module needed.
 //
 // Override the theme.* colors to match your module's palette (see #8). Defaults = dark.
 // The card calls qr.generateCard(title, description, data) and renders title + description
-// + the QR, with a "Save as image" button (qr.savePng → ~/Pictures/qr/).
+// + the QR, with a "Save as image" button (writes the PNG itself, no module needed).
 // ─────────────────────────────────────────────────────────────────────────────
 Item {
     id: card
@@ -30,6 +29,8 @@ Item {
                                        // (named `payload`, not `data` — `data` is a
                                        //  reserved default property on QML Item)
     property bool   showSaveButton: true
+    // Plain path, not StandardPaths — see the dropped Qt.labs.platform import.
+    property string saveDir: "/tmp"
 
     // ── Theme (override to match the host module) ─────────────────────────
     property color cardBg:      "#171717"
@@ -50,11 +51,12 @@ Item {
     property bool   _saveOk: false
 
     implicitWidth: 360
-    implicitHeight: outer.height
+    implicitHeight: outer.implicitHeight
 
-    onPayloadChanged:     regenerate()
-    onTitleChanged:       regenerate()
-    onDescriptionChanged: regenerate()
+    // Payload only: title/description are drawn by this card, not encoded into the
+    // matrix, so re-encoding when they change is pure waste — and with a live
+    // countdown in the description it meant a blocking call every second.
+    onPayloadChanged: regenerate()
     Component.onCompleted: if (payload.length > 0) regenerate()
 
     // logos.callModule returns a double-JSON-encoded string; unwrap to an object.
@@ -67,9 +69,14 @@ Item {
         _err = ""; _saveMsg = ""; _n = 0; _cells = []
         if (!payload || payload.length === 0) return
         if (typeof logos === "undefined") { _err = "Module bridge unavailable."; return }
-        var res = callModuleParse(logos.callModule("qr", "generateCard", [title, description, payload]))
+        // Encoded by node_remote's own bundled encoder. This used to call
+        // qr.generateCard on the separate `qr` core module, and that cross-module hop
+        // failed on a machine where `qr` was installed AND loaded — leaving the pairing
+        // code unrenderable with no way to tell why. The encoder now ships in the module
+        // we are already talking to, so there is no second module to be missing.
+        var res = callModuleParse(logos.callModule("node_remote", "generateQr", [payload]))
         if (!res || !res.ok) {
-            _err = (res && res.error) ? res.error : "QR service unavailable — is the 'qr' module installed?"
+            _err = (res && res.error) ? res.error : "Could not encode the pairing code."
             return
         }
         _n = res.n; _cells = res.cells
@@ -78,14 +85,13 @@ Item {
     // Grab the card (title + description + QR — NOT the Save button) and save via qr core.
     function saveImage() {
         _saveMsg = ""
-        if (_n <= 0 || typeof logos === "undefined") return
-        var name = "qr-" + Qt.formatDateTime(new Date(), "yyyyMMdd-hhmmss")
-        var tmp  = "/tmp/" + name + ".png"
+        if (_n <= 0) return
+        // grabToImage writes the PNG directly, so saving needs no module at all.
+        var name = "qr-" + Qt.formatDateTime(new Date(), "yyyyMMdd-hhmmss") + ".png"
+        var dest = card.saveDir + "/" + name
         captureCard.grabToImage(function(result) {
-            if (!result.saveToFile(tmp)) { card._saveOk = false; card._saveMsg = "Could not capture image."; return }
-            var res = card.callModuleParse(logos.callModule("qr", "savePng", [tmp, name]))
-            if (res && res.ok) { card._saveOk = true;  card._saveMsg = "Saved: " + res.path }
-            else               { card._saveOk = false; card._saveMsg = "Save failed: " + (res && res.error ? res.error : "?") }
+            if (result.saveToFile(dest)) { card._saveOk = true;  card._saveMsg = "Saved: " + dest }
+            else                         { card._saveOk = false; card._saveMsg = "Could not save the image." }
         })
     }
 
@@ -132,8 +138,8 @@ Item {
                     id: frame
                     visible: card._n > 0
                     Layout.alignment: Qt.AlignHCenter
-                    Layout.preferredWidth: 260
-                    Layout.preferredHeight: 260
+                    Layout.preferredWidth: 320
+                    Layout.preferredHeight: 320
                     radius: 8
                     color: card.qrBg
                     readonly property int cell: card._n > 0 ? Math.max(1, Math.floor((width - 32) / card._n)) : 1

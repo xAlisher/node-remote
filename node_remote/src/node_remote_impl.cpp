@@ -5,6 +5,7 @@
 #include "onion_service.h"
 #include "pairing.h"
 #include "block_store.h"
+#include "vendor/qrcodegen.hpp"
 
 // The typed wrapper for blockchain_module. Generated at build time from the flake input
 // whose attribute name matches the dependency string EXACTLY (see flake.nix) — there is
@@ -101,6 +102,7 @@ std::string NodeRemoteImpl::stopRemote()
 {
     m_onion->stop();
     m_http->stop();
+    m_http->forgetLastAuthed();   // otherwise the next pairing starts life "connected"
     m_port = 0;
     QJsonObject r;
     r["ok"] = true;
@@ -115,6 +117,11 @@ std::string NodeRemoteImpl::getRemoteInfo()
     r["onion"]   = m_onion->onion();
     r["port"]    = static_cast<int>(m_port);
     r["error"]   = m_onion->lastError();
+    // "connected" means a phone has actually authenticated against the onion — NOT that a
+    // client-auth key exists. The key is minted when the QR is drawn, so keying it off the
+    // key file made the pane declare itself connected before anyone had scanned anything.
+    r["lastSeen"]  = m_http->lastAuthedAt();
+    r["connected"] = m_http->lastAuthedAt() > 0;
     QJsonArray cl;
     for (const QString& c : m_onion->authorizedClients()) cl.append(c);
     r["clients"] = cl;
@@ -335,9 +342,41 @@ std::string NodeRemoteImpl::beginPairing(const std::string& label)
     r["uri"] = QStringLiteral("lgnode://pair?v=1&onion=%1&ca=%2&t=%3&exp=%4")
                    .arg(onion, kp.privBase32, token).arg(exp);
     r["sas"] = pairing::sas(token, onion);   // shown on BOTH ends; user matches them
+    // Returned separately so the pane can display it without re-parsing the URI. It is
+    // already inside `uri`; this is a convenience, not an extra secret.
+    r["token"] = token;
+    r["onion"] = onion;
     r["expiresAt"] = exp;
     r["label"] = name;
     // The private key is IN the uri by necessity (see pairing.h); do not log the uri.
+    return dump(r);
+}
+
+std::string NodeRemoteImpl::generateQr(const std::string& payload)
+{
+    QJsonObject r;
+    if (payload.empty()) { r["ok"] = false; r["error"] = "empty payload"; return dump(r); }
+
+    try {
+        // MEDIUM ecc: the pairing URI is ~180 chars and the code is read off a monitor at
+        // close range, so recovery capacity matters far less than keeping the modules big
+        // enough for a phone camera to resolve.
+        const qrcodegen::QrCode qr =
+            qrcodegen::QrCode::encodeText(payload.c_str(), qrcodegen::QrCode::Ecc::MEDIUM);
+        const int n = qr.getSize();
+        QJsonArray cells;
+        for (int y = 0; y < n; ++y)
+            for (int x = 0; x < n; ++x)
+                cells.append(qr.getModule(x, y));
+        r["ok"] = true;
+        r["n"] = n;
+        r["cells"] = cells;
+    } catch (const std::exception& e) {
+        // encodeText throws data_too_long past version 40. Report it rather than
+        // returning a blank card the user cannot diagnose.
+        r["ok"] = false;
+        r["error"] = QString::fromUtf8(e.what());
+    }
     return dump(r);
 }
 

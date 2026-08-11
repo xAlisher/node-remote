@@ -35,10 +35,17 @@ Item {
     property string onion:   ""
     property string pairUri: ""
     property string sas:     ""
+    property string token:   ""
+    property int    expiresAt: 0        // unix seconds, from beginPairing
+    property int    secsLeft:  0
     property var    clients: []
     property string note:    ""
+    property bool   connected: false        // a phone has actually authenticated
 
-    readonly property bool paired: clients.length > 0
+    // "Paired" must mean a device SPOKE to us, not that a key exists for one. The
+    // client-auth key is written when the QR is rendered, so clients.length > 0 is true
+    // the instant the code appears — which hid the QR before it could be scanned.
+    readonly property bool paired: root.connected
 
     // callModule returns the module's JSON as a STRING inside another JSON envelope.
     function parse(res) {
@@ -50,17 +57,37 @@ Item {
 
     function refresh() {
         var info = parse(logos.callModule("node_remote", "getRemoteInfo", []));
-        root.ready   = info.ready === true;
-        root.onion   = info.onion || "";
-        root.clients = info.clients || [];
+        root.ready     = info.ready === true;
+        root.onion     = info.onion || "";
+        root.clients   = info.clients || [];
+        root.connected = info.connected === true;
         if (info.error) root.note = info.error;
+    }
+
+    function tick() {
+        if (root.expiresAt <= 0) { root.secsLeft = 0; return }
+        var left = root.expiresAt - Math.floor(Date.now() / 1000)
+        root.secsLeft = left > 0 ? left : 0
+    }
+
+    // Derived from the absolute expiry each second, never decremented — a timer that
+    // stalls or gets throttled must not leave a code looking valid after it has expired.
+    Timer {
+        interval: 1000; repeat: true
+        running: root.expiresAt > 0 && !root.connected
+        onTriggered: root.tick()
     }
 
     Component.onCompleted: refresh()
 
     Timer {
         id: poll
-        interval: 2500; repeat: true; running: root.busy || (root.onion !== "" && !root.ready)
+        interval: 2500; repeat: true
+        // Third clause: keep polling while a code is on screen, or we would never notice
+        // the phone arriving — the desktop learns that only from an authenticated request.
+        running: root.busy
+                 || (root.onion !== "" && !root.ready)
+                 || (root.pairUri !== "" && !root.connected)
         property bool inFlight: false
         onTriggered: {
             if (inFlight) return           // re-entrancy guard: callModule blocks
@@ -84,6 +111,9 @@ Item {
         if (p.ok !== true) { root.note = p.error || "pairing failed"; root.busy = false; return }
         root.pairUri = p.uri || ""
         root.sas     = p.sas || ""
+        root.token   = p.token || ""
+        root.expiresAt = p.expiresAt || 0
+        root.tick()
         root.busy    = false
         root.note    = ""
         refresh()
@@ -93,7 +123,9 @@ Item {
         for (var i = 0; i < root.clients.length; ++i)
             logos.callModule("node_remote", "revokeClient", [root.clients[i]])
         logos.callModule("node_remote", "stopRemote", [])
-        root.pairUri = ""; root.sas = ""; root.onion = ""; root.ready = false
+        root.pairUri = ""; root.sas = ""; root.token = ""; root.onion = ""; root.ready = false
+        root.expiresAt = 0; root.secsLeft = 0
+        root.connected = false
         root.note = "Disconnected. The onion no longer answers that device."
         refresh()
     }
@@ -118,7 +150,7 @@ Item {
                     font.pixelSize: 26; font.bold: true
                 }
                 Label {
-                    text: "Watch and control this node from your phone, over a private Tor connection."
+                    text: "Watch, control and receive notifications from the node on your phone over Tor connection."
                     color: root.textDim
                     font.pixelSize: 13
                     Layout.fillWidth: true
@@ -141,7 +173,7 @@ Item {
                     spacing: 8
 
                     Label {
-                        text: "1 · Get the Android app"
+                        text: "1. Get Node Remote app"
                         color: root.textCol; font.pixelSize: 15; font.bold: true
                     }
                     Label {
@@ -220,7 +252,7 @@ Item {
                     RowLayout {
                         Layout.fillWidth: true
                         Label {
-                            text: root.paired ? "Connected" : "2 · Pair your phone"
+                            text: root.paired ? "Connected" : "2. Pair your phone"
                             color: root.paired ? root.success : root.textCol
                             font.pixelSize: 15; font.bold: true
                             Layout.fillWidth: true
@@ -260,9 +292,13 @@ Item {
 
                     // Not started yet.
                     Button {
-                        visible: !root.paired && root.pairUri === "" && !root.busy
-                        text: "Show QR"
-                        onClicked: root.startRemote()
+                        // Also shown once the code expires — otherwise the pane strands the
+                        // user with a dead QR and no way to ask for another.
+                        visible: !root.paired && !root.busy
+                                 && (root.pairUri === "" || root.secsLeft === 0)
+                        text: root.pairUri === "" ? "Show QR" : "New code"
+                        // The onion is already up on a retry; only the code needs reminting.
+                        onClicked: root.ready ? root.beginPairing() : root.startRemote()
                         contentItem: Label {
                             text: parent.text; color: "#171717"
                             font.pixelSize: 13; font.bold: true
@@ -283,9 +319,12 @@ Item {
 
                         QrCard {
                             Layout.fillWidth: true
-                            Layout.preferredHeight: 320
+                            // An expired code still scans — dim it so it reads as dead.
+                            opacity: root.secsLeft > 0 ? 1.0 : 0.35
                             title: "Scan with Node Remote"
-                            description: "Valid for 2 minutes"
+                            description: root.secsLeft > 0
+                                         ? "Expires in " + root.secsLeft + "s"
+                                         : "Expired — press Show QR for a new code"
                             payload: root.pairUri
                             cardBg: root.surface2
                             titleColor: root.textCol
@@ -307,6 +346,36 @@ Item {
                                 font.pixelSize: 20; font.bold: true
                                 font.family: "monospace"
                             }
+                        }
+
+                        // The same pairing data in text form. The app's "Enter URI" screen
+                        // takes this, so a phone whose camera will not focus — or a desktop
+                        // being driven over a remote session — can still pair.
+                        SecretRow {
+                            Layout.fillWidth: true
+                            label: "Pairing URI"
+                            value: root.pairUri
+                            fieldBg: root.surface2
+                            borderCol: root.border
+                            textDim: root.textDim
+                            accentCol: root.accent
+                            okCol: root.success
+                        }
+                        SecretRow {
+                            Layout.fillWidth: true
+                            label: "Token"
+                            value: root.token
+                            fieldBg: root.surface2
+                            borderCol: root.border
+                            textDim: root.textDim
+                            accentCol: root.accent
+                            okCol: root.success
+                        }
+                        Label {
+                            text: "Treat these like a password — the URI carries the key that " +
+                                  "lets a phone reach this node."
+                            color: root.textDim; font.pixelSize: 11
+                            Layout.fillWidth: true; wrapMode: Text.WordWrap
                         }
                     }
 

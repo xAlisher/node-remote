@@ -11,6 +11,9 @@ set(NODE_REMOTE_SOURCES
     src/node_probe.h        src/node_probe.cpp
     src/pairing.h           src/pairing.cpp
     src/block_store.h       src/block_store.cpp
+    # Vendored MIT QR encoder (Project Nayuki). Bundled rather than calling the
+    # separate `qr` core module — see NodeRemoteImpl::generateQr for why.
+    src/vendor/qrcodegen.hpp src/vendor/qrcodegen.cpp
 )
 
 # NOTE: metadata.json's nix.cmake.find_packages / extra_link_libraries are NOT consumed by
