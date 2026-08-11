@@ -140,7 +140,12 @@ class MainActivity : ComponentActivity() {
             // time). DISCONNECTED is a user-intent state, not an observation.
             link = when {
                 !hasInternet() -> Link.NO_INTERNET
-                state.reachable -> Link.CONNECTED
+                // ANSWERED, not reachable. `reachable` means the DESKTOP reached the NODE,
+                // which says nothing about our link to the desktop. Keying the transport
+                // line off it made the app report "Connecting via Tor" while Tor was fully
+                // up and it was the node that was down — blaming the transport for the
+                // node's problem, which is exactly the wrong place to send someone.
+                state.answered -> Link.CONNECTED
                 else -> Link.CONNECTING
             }
             android.util.Log.i(TAG, "refresh state=${state.state} height=${state.height} " +
