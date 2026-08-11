@@ -14,5 +14,6 @@
       "build": [],
       "runtime": []
     }
-  }
+  },
+  "icon": "icons/node-remote.png"
 }
