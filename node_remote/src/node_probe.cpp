@@ -174,14 +174,30 @@ QByteArray NodeProbe::statusJson()
         out["blendStatus"] = QStringLiteral("Unknown");
     }
 
+    // Peers/connections use logos_node_1click's EXACT derivation
+    // (logos_node_1click_backend.cpp:446-471) so both surfaces report the same numbers
+    // from the same payload:
+    //   peers       = n_peers, else connected_peers.length, else -1
+    //   connections = n_connections, else FALL BACK TO peers
+    // The -1 sentinel matters: it means "unknown", which is not the same as zero peers.
+    int peers = -1, connections = -1;
     bool netOk = false;
     const QByteArray net = get(apiBase() + "/network/info", 1500, &netOk);
     if (netOk) {
         const QJsonObject n = QJsonDocument::fromJson(net).object();
-        out["peers"]       = n.value("n_peers");
-        out["connections"] = n.value("n_connections");
-        out["peerId"]      = n.value("peer_id");
+        if (n.contains(QStringLiteral("n_peers")))
+            peers = n.value(QStringLiteral("n_peers")).toInt();
+        else if (n.contains(QStringLiteral("connected_peers")))
+            peers = n.value(QStringLiteral("connected_peers")).toArray().size();
+
+        connections = n.contains(QStringLiteral("n_connections"))
+                          ? n.value(QStringLiteral("n_connections")).toInt()
+                          : peers;
+
+        out["peerId"] = n.value("peer_id");
     }
+    out["peers"]       = peers;
+    out["connections"] = connections;
 
     return QJsonDocument(out).toJson(QJsonDocument::Compact);
 }
