@@ -47,9 +47,19 @@ public:
 
     // Authorize a client. `x25519PubBase32` is the client's X25519 public key in the
     // base32 form tor expects. Writes <hsDir>/authorized_clients/<name>.auth.
-    // Takes effect on the next tor reload; call restart() or reload() after a batch.
+    //
+    // Tor reads authorized_clients ONLY AT STARTUP, so this does NOT take effect until
+    // reload(). Callers must reload — otherwise pairing appears to succeed while the
+    // service is still reachable by anyone. (Caught by tests/pairing_e2e.sh P3.)
     bool authorizeClient(const QString& name, const QString& x25519PubBase32);
+
+    // Remove a client. If this removes the LAST one, a deny-all sentinel is installed
+    // (see sealClosed) so the service stays shut rather than reverting to open.
     bool revokeClient(const QString& name);
+
+    // Restart tor so authorized_clients changes take effect. The .onion address is
+    // persistent key material, so it survives — same address, new auth set.
+    QString reload();
     QStringList authorizedClients() const;
 
     // Wipe the persistent HS key material → a brand-new .onion on next start.
@@ -63,8 +73,10 @@ private slots:
     void poll();
 
 private:
+    void    sealClosed();
     QString persistentHsDir() const;
     QString authClientsDir() const;
+    QString torCacheDir() const;
     bool    spawnTor(const QString& cfg, QString& errOut);
 
     QProcess* m_tor = nullptr;
@@ -75,4 +87,5 @@ private:
     int       m_ticks = 0;
     int       m_bootstrappedAt = 0;
     QTimer    m_poll;
+    quint16   m_localPort = 0;
 };

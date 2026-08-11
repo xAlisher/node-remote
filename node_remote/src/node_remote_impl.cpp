@@ -3,12 +3,14 @@
 #include "http_surface.h"
 #include "node_probe.h"
 #include "onion_service.h"
+#include "pairing.h"
 
 // The typed wrapper for blockchain_module. Generated at build time from the flake input
 // whose attribute name matches the dependency string EXACTLY (see flake.nix) — there is
 // no prebuilt SDK header for this module.
 #include "logos_sdk.h"
 
+#include <QDateTime>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
@@ -134,6 +136,95 @@ std::string NodeRemoteImpl::stopNode()
     QJsonObject r;
     r["ok"] = res.success;
     if (!res.success) r["error"] = QString::fromStdString(res.error);
+    return dump(r);
+}
+
+std::string NodeRemoteImpl::beginPairing(const std::string& label)
+{
+    QJsonObject r;
+    const QString name = QString::fromStdString(label.empty() ? "phone" : label);
+
+    if (!m_onion->isReady()) {
+        // Refuse rather than hand out a QR that will expire while tor is still
+        // publishing. The user would scan it, fail, and have no idea why.
+        r["ok"] = false;
+        r["error"] = "onion not ready — wait for the descriptor to publish";
+        return dump(r);
+    }
+
+    const pairing::KeyPair kp = pairing::generateClientAuthKey();
+    if (!kp.ok) { r["ok"] = false; r["error"] = "keygen_failed"; return dump(r); }
+
+    if (!m_onion->authorizeClient(name, kp.pubBase32)) {
+        r["ok"] = false; r["error"] = "authorize_failed"; return dump(r);
+    }
+
+    // Tor only reads authorized_clients at startup, so the entry we just wrote is inert
+    // until we restart it. Without this the QR pairs "successfully" while the onion is
+    // still open to anyone who learns the address. tests/pairing_e2e.sh P3 caught this.
+    const QString rerr = m_onion->reload();
+    if (!rerr.isEmpty()) { r["ok"] = false; r["error"] = "reload_failed:" + rerr; return dump(r); }
+
+    const QString token = pairing::randomToken();
+    const QString onion = m_onion->onion();
+    const qint64 exp = QDateTime::currentSecsSinceEpoch() + 120;
+
+    r["ok"] = true;
+    r["uri"] = QStringLiteral("lgnode://pair?v=1&onion=%1&ca=%2&t=%3&exp=%4")
+                   .arg(onion, kp.privBase32, token).arg(exp);
+    r["sas"] = pairing::sas(token, onion);   // shown on BOTH ends; user matches them
+    r["expiresAt"] = exp;
+    r["label"] = name;
+    // The private key is IN the uri by necessity (see pairing.h); do not log the uri.
+    return dump(r);
+}
+
+std::string NodeRemoteImpl::selfTest()
+{
+    QJsonObject r;
+    int pass = 0, fail = 0;
+    auto check = [&](const char* what, bool cond) {
+        if (cond) ++pass; else { ++fail; r[QString("FAILED_") + what] = true; }
+    };
+
+    // base32 round-trips, and matches a known vector (tor's alphabet, lowercase, unpadded)
+    const QByteArray raw = QByteArray::fromHex("000102030405060708090a0b0c0d0e0f"
+                                               "101112131415161718191a1b1c1d1e1f");
+    const QString b32 = pairing::base32Encode(raw);
+    check("b32_roundtrip", pairing::base32Decode(b32) == raw);
+    check("b32_len_52", b32.size() == 52);          // 32 bytes -> 52 base32 chars
+    check("b32_lowercase", b32 == b32.toLower());
+
+    // keygen: 32-byte halves, distinct, and two calls differ
+    const pairing::KeyPair a = pairing::generateClientAuthKey();
+    const pairing::KeyPair b = pairing::generateClientAuthKey();
+    check("keygen_ok", a.ok && b.ok);
+    check("key_sizes", a.privRaw.size() == 32 && a.pubRaw.size() == 32);
+    check("priv_ne_pub", a.privRaw != a.pubRaw);
+    check("keys_distinct", a.privRaw != b.privRaw);
+    check("pub_b32_52", a.pubBase32.size() == 52);
+
+    // tokens are random and hex
+    const QString t1 = pairing::randomToken(), t2 = pairing::randomToken();
+    check("token_nonempty", !t1.isEmpty());
+    check("token_distinct", t1 != t2);
+    check("token_len_48", t1.size() == 48);         // 24 bytes hex
+
+    // SAS: deterministic, 6 digits, and changes if EITHER input changes
+    const QString s1 = pairing::sas("tok", "abc.onion");
+    check("sas_stable", s1 == pairing::sas("tok", "abc.onion"));
+    check("sas_6_digits", s1.size() == 6);
+    check("sas_binds_token", s1 != pairing::sas("tok2", "abc.onion"));
+    check("sas_binds_onion", s1 != pairing::sas("tok", "xyz.onion"));
+
+    // constant-time compare still has to be CORRECT
+    check("eq_same", pairing::secureEquals("abc", "abc"));
+    check("eq_diff", !pairing::secureEquals("abc", "abd"));
+    check("eq_len", !pairing::secureEquals("abc", "abcd"));
+
+    r["passed"] = pass;
+    r["failed"] = fail;
+    r["ok"] = (fail == 0);
     return dump(r);
 }
 

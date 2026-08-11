@@ -9,6 +9,8 @@
 #include <QStandardPaths>
 #include <QTextStream>
 
+#include <openssl/rand.h>
+
 #ifdef Q_OS_LINUX
 #include <csignal>
 #include <sys/prctl.h>
@@ -90,20 +92,33 @@ QString OnionService::authClientsDir() const
     return persistentHsDir() + "/authorized_clients";
 }
 
+QString OnionService::torCacheDir() const
+{
+    return QStandardPaths::writableLocation(QStandardPaths::AppDataLocation)
+           + "/node_remote/tor-cache";
+}
+
 bool OnionService::spawnTor(const QString& cfg, QString& errOut)
 {
     const QString bin     = resolveTor();
-    const QString dataDir = m_runDir + "/data";
+    // PERSISTENT across restarts. m_runDir is a temp dir wiped on stop(), and putting
+    // tor's DataDirectory there meant a COLD consensus fetch on every start — 30-60s at
+    // best, and the directory authorities throttle repeated cold starts until tor sits
+    // at "Bootstrapped 5%" indefinitely. That matters now that reload() restarts tor on
+    // every pairing. Cached, it bootstraps in seconds.
+    const QString dataDir = torCacheDir();
     const QString torrc   = m_runDir + "/torrc";
 
-    // Any failure leaves nothing behind (Senty ISSUE-5).
+    // A failed start leaves no RUN state behind (Senty ISSUE-5). The tor cache is
+    // deliberately kept — it holds no secrets of ours, only the public consensus.
     auto fail = [&](const QString& code) {
         QDir(m_runDir).removeRecursively();
         errOut = code;
         return false;
     };
 
-    if (!QDir().mkpath(dataDir)) return fail(QStringLiteral("tor_dir_failed"));
+    if (!QDir().mkpath(dataDir) || !QDir().mkpath(m_runDir))
+        return fail(QStringLiteral("tor_dir_failed"));
     QFile::setPermissions(m_runDir, kOwnerOnlyDir);
     QFile::setPermissions(dataDir, kOwnerOnlyDir);
 
@@ -153,6 +168,7 @@ bool OnionService::spawnTor(const QString& cfg, QString& errOut)
 
 QString OnionService::start(quint16 localPort)
 {
+    m_localPort = localPort;
     if (m_tor && m_tor->state() == QProcess::Running) return QString();
 
     m_runDir = QStandardPaths::writableLocation(QStandardPaths::TempLocation)
@@ -170,7 +186,7 @@ QString OnionService::start(quint16 localPort)
     QString cfg;
     QTextStream s(&cfg);
     s << "SocksPort 0\n"                                    // serve the HS only (Senty ISSUE-2)
-      << "DataDirectory " << m_runDir << "/data\n"
+      << "DataDirectory " << torCacheDir() << "\n"
       << "Log notice file " << m_runDir << "/tor.log\n"
       // Descriptor upload is logged at INFO in the [rend] domain. notice level NEVER logs it,
       // which is what made radio false-timeout on a perfectly reachable onion.
@@ -186,7 +202,17 @@ QString OnionService::start(quint16 localPort)
         return err;
     }
 
+    // Re-read the address from the PERSISTENT hostname file straight away. The .onion is
+    // stable key material, so after a reload it is unchanged — clearing it and waiting
+    // for the poll produced a pairing URI with an empty onion= field.
     m_onion.clear();
+    {
+        QFile hf(persistentHsDir() + "/hostname");
+        if (hf.open(QIODevice::ReadOnly)) {
+            m_onion = QString::fromUtf8(hf.readAll()).trimmed();
+            hf.close();
+        }
+    }
     m_ready = false;
     m_error.clear();
     m_ticks = 0;
@@ -272,14 +298,63 @@ bool OnionService::authorizeClient(const QString& name, const QString& x25519Pub
 
 bool OnionService::revokeClient(const QString& name)
 {
-    return QFile::remove(authClientsDir() + "/" + name + ".auth");
+    const bool removed = QFile::remove(authClientsDir() + "/" + name + ".auth");
+    sealClosed();
+    return removed;
+}
+
+QString OnionService::reload()
+{
+    // Tor parses authorized_clients once, at startup. Changing the set therefore means
+    // restarting tor. The hidden-service KEYS live in a persistent dir, so the .onion
+    // address is unchanged across this — users keep their paired address.
+    const quint16 p = m_localPort;
+    stop();
+    return start(p);
+}
+
+void OnionService::sealClosed()
+{
+    // An authorized_clients dir with no valid entries does NOT mean "nobody may connect".
+    // Tor treats the service as having no client auth at all and serves it to the world.
+    // That is a fail-OPEN, and it is what P4 caught: revoking the last device silently
+    // reopened the service.
+    //
+    // So when the set would become empty, install a sentinel authorizing a freshly
+    // generated key that is immediately discarded. Nobody holds the private half, so the
+    // descriptor stays encrypted and the service stays shut. Fail closed.
+    QDir d(authClientsDir());
+    if (!d.exists()) return;                       // never paired: open by design
+    if (!d.entryList({"*.auth"}, QDir::Files).isEmpty()) return;
+
+    unsigned char pub[32];
+    if (RAND_bytes(pub, sizeof pub) != 1) return;
+    // base32 (RFC 4648, lowercase, unpadded) — same alphabet tor uses.
+    static const char* A = "abcdefghijklmnopqrstuvwxyz234567";
+    QString b32; int bits = 0; quint32 acc = 0;
+    for (unsigned char ch : pub) {
+        acc = (acc << 8) | ch; bits += 8;
+        while (bits >= 5) { b32.append(QLatin1Char(A[(acc >> (bits - 5)) & 0x1F])); bits -= 5; }
+    }
+    if (bits > 0) b32.append(QLatin1Char(A[(acc << (5 - bits)) & 0x1F]));
+
+    QFile f(authClientsDir() + "/_sealed.auth");
+    if (f.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
+        f.write(QStringLiteral("descriptor:x25519:%1\n").arg(b32).toUtf8());
+        f.close();
+        QFile::setPermissions(f.fileName(), QFileDevice::ReadOwner | QFileDevice::WriteOwner);
+        qInfo() << "OnionService: last client revoked — sealed closed with a discarded key";
+    }
 }
 
 QStringList OnionService::authorizedClients() const
 {
     QStringList out;
-    for (const QString& f : QDir(authClientsDir()).entryList({"*.auth"}, QDir::Files))
-        out << f.left(f.size() - 5);
+    for (const QString& f : QDir(authClientsDir()).entryList({"*.auth"}, QDir::Files)) {
+        const QString n = f.left(f.size() - 5);
+        if (n == QLatin1String("_sealed")) continue;   // internal deny-all sentinel
+        out << n;
+    }
     return out;
 }
 

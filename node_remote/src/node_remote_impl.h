@@ -52,6 +52,16 @@ public:
     /// Stop the blockchain node. Returns {"ok":bool,"error":"..."}.
     std::string stopNode();
 
+    /// Begin pairing: mint an X25519 client-auth keypair, pre-authorize it, and mint a
+    /// one-time enrollment token. Returns {uri, sas, expiresAt, deviceKey}.
+    /// The `uri` is what the QR encodes. Do NOT display it before the onion is ready —
+    /// the 120s window would be spent waiting for the descriptor upload.
+    std::string beginPairing(const std::string& label);
+
+    /// Exercise the pairing primitives against known answers. Returns a JSON report.
+    /// Exists so the crypto is provable headlessly, with no phone and no Tor.
+    std::string selfTest();
+
     /// Authorize a paired client. `x25519PubBase32` is the client's public key.
     /// Returns {"ok":bool}. Takes effect on the next restartOnion().
     std::string authorizeClient(const std::string& name, const std::string& x25519PubBase32);

@@ -18,7 +18,8 @@
       ],
       "runtime": [
         "qt6.qthttpserver",
-        "tor"
+        "tor",
+        "openssl"
       ]
     },
     "external_libraries": [],

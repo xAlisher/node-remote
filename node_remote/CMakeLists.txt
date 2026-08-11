@@ -9,6 +9,7 @@ set(NODE_REMOTE_SOURCES
     src/onion_service.h     src/onion_service.cpp
     src/http_surface.h      src/http_surface.cpp
     src/node_probe.h        src/node_probe.cpp
+    src/pairing.h           src/pairing.cpp
 )
 
 # NOTE: metadata.json's nix.cmake.find_packages / extra_link_libraries are NOT consumed by
@@ -20,6 +21,7 @@ if(DEFINED ENV{LOGOS_MODULE_BUILDER_ROOT})
     include($ENV{LOGOS_MODULE_BUILDER_ROOT}/cmake/LogosModule.cmake)
 
     find_package(Qt6 REQUIRED COMPONENTS HttpServer)
+    find_package(OpenSSL REQUIRED)
 
     file(READ "${CMAKE_CURRENT_SOURCE_DIR}/metadata.json" METADATA_JSON)
     # MUST be quoted: an unquoted ${METADATA_JSON} is expanded as a CMake LIST, which
@@ -28,7 +30,7 @@ if(DEFINED ENV{LOGOS_MODULE_BUILDER_ROOT})
 
     logos_module(
         NAME ${MODULE_NAME}
-        LINK_LIBRARIES Qt6::HttpServer
+        LINK_LIBRARIES Qt6::HttpServer OpenSSL::Crypto
         SOURCES ${NODE_REMOTE_SOURCES}
     )
     return()
@@ -42,6 +44,7 @@ else()
 endif()
 
 find_package(Qt6 REQUIRED COMPONENTS HttpServer)
+find_package(OpenSSL REQUIRED)
 
 file(READ "${CMAKE_CURRENT_SOURCE_DIR}/metadata.json" METADATA_JSON)
 # MUST be quoted: an unquoted ${METADATA_JSON} is expanded as a CMake LIST, which
@@ -50,6 +53,6 @@ file(READ "${CMAKE_CURRENT_SOURCE_DIR}/metadata.json" METADATA_JSON)
 
 logos_module(
     NAME ${MODULE_NAME}
-    LINK_LIBRARIES Qt6::HttpServer
+    LINK_LIBRARIES Qt6::HttpServer OpenSSL::Crypto
     SOURCES ${NODE_REMOTE_SOURCES}
 )
