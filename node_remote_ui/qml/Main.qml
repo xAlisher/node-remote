@@ -282,9 +282,20 @@ Item {
                             color: root.textDim; font.pixelSize: 12
                             Layout.fillWidth: true; elide: Text.ElideRight
                         }
+                        // Checked against rend-spec-v3 before writing. A v3 address IS the
+                        // ed25519 identity key — base32(PUBKEY|CHECKSUM|VERSION) — and the
+                        // descriptor's OUTER layer is encrypted to a credential derived from
+                        // that key. So anyone holding the address can fetch the descriptor and
+                        // decrypt the outer layer, which is enough to confirm the service
+                        // exists. Only the INNER layer, holding the introduction points, needs
+                        // an authorized client key. The previous copy claimed nobody could
+                        // "tell that it exists", which is false for anyone with the address —
+                        // and we print that address here with a Copy button.
                         Label {
-                            text: "Only this device can reach your node. Nobody else can connect to it, " +
-                                  "look it up, or tell that it exists."
+                            text: "Only paired devices can reach your node from outside this " +
+                                  "computer: without the key from the pairing code, nobody can " +
+                                  "connect. The address is not listed anywhere to look up, but " +
+                                  "anyone who does learn it can tell the service exists."
                             color: root.textDim; font.pixelSize: 11
                             Layout.fillWidth: true; wrapMode: Text.WordWrap
                         }
