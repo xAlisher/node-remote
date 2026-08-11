@@ -39,6 +39,11 @@ public:
     // it was generated, so the code could never be scanned.
     qint64 lastAuthedAt() const { return m_lastAuthedAt; }
     void   forgetLastAuthed()   { m_lastAuthedAt = 0; }
+    void   setLastAuthedAt(qint64 t) { m_lastAuthedAt = t; }   // restored from disk at start
+
+    /// Called after a request passes the bearer check. The impl uses it to persist
+    /// last-seen, throttled — HttpSurface has no business knowing about files.
+    void setAuthedHook(std::function<void()> h) { m_onAuthed = std::move(h); }
 
     // Control handlers, injected by the impl so this class never includes logos_sdk.h.
     // Each returns the JSON body to send back.
@@ -73,4 +78,5 @@ private:
     quint16      m_port   = 0;
     // Written from authorized(), which is const — hence mutable, not a design smell.
     mutable qint64 m_lastAuthedAt = 0;
+    std::function<void()> m_onAuthed;
 };

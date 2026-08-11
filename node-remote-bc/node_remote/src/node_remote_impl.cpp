@@ -20,6 +20,7 @@
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QStandardPaths>
+#include <QTimer>
 
 namespace {
 std::string dump(const QJsonObject& o)
@@ -43,6 +44,11 @@ NodeRemoteImpl::NodeRemoteImpl()
     // not set.
     const std::string saved = loadToken();
     if (!saved.empty()) m_http->setToken(QString::fromStdString(saved));
+    // Restore last-seen so "have we ever been paired" survives a Basecamp restart. Without
+    // it the pane forgot a live pairing and offered a fresh QR for a phone that was still
+    // authorised on the onion and still holding a valid token.
+    m_http->setLastAuthedAt(static_cast<qint64>(loadLastSeen()));
+    m_http->setAuthedHook([this] { persistLastSeenThrottled(); });
 
     QObject::connect(m_onion, &OnionService::ready, m_onion, [this](const QString& a) {
         onionReady(a.toStdString());
@@ -159,53 +165,83 @@ std::string NodeRemoteImpl::getNodeStatus()
 {
     QJsonObject o = QJsonDocument::fromJson(g_probe->statusJson()).object();
 
-    // Balance is NOT in the node's REST API — it comes from blockchain_module's wallet
-    // RPCs, so it is merged here rather than in node_probe (which is HTTP-only by design).
-    // Two calls: the known addresses, then the balance of the first (the "primary
-    // address" the desktop dashboard shows).
-    // NOTE: unlike the chain fields (read over the node's own HTTP API, which works no
-    // matter who started the node), the wallet RPCs are INSTANCE-BOUND — they answer only
-    // in the blockchain_module instance that is actually running the node. Under Basecamp
-    // that is the same instance node_remote talks to, so this works. In an isolated
-    // logoscore harness it returns "The node is not running." and balance is unavailable.
-    // Surface that rather than showing a silent dash.
-    if (isContextReady()) {
-        const StdLogosResult addrs = modules().blockchain_module.wallet_get_known_addresses();
-        if (!addrs.success) o["balanceError"] = QString::fromStdString(addrs.error);
-        if (addrs.success) {
-            QString primary;
-            const QJsonDocument ad = QJsonDocument::fromJson(
-                QByteArray::fromStdString(addrs.value.dump()));
-            if (ad.isArray() && !ad.array().isEmpty())
-                primary = ad.array().first().toString();
-            else if (ad.isObject())
-                primary = ad.object().value("address").toString();
-
-            if (!primary.isEmpty()) {
-                o["primaryAddress"] = primary;
-                const StdLogosResult bal =
-                    modules().blockchain_module.wallet_get_balance(primary.toStdString());
-                if (bal.success) {
-                    // Base units -> LGO with the same 10^4 divisor the desktop uses.
-                    const QString raw = QString::fromStdString(bal.value.dump()).remove('"');
-                    bool okNum = false;
-                    const double v = raw.toDouble(&okNum);
-                    o["balanceRaw"] = raw;
-                    if (okNum) o["balance"] = QString::number(v / 10000.0, 'f', 4);
-                }
-            }
-        }
-    }
+    // Balance is merged from a CACHE refreshed on a timer — never fetched here.
+    //
+    // This function is called from the HTTP handler, which runs on the module's Qt event
+    // loop. blockchain_module's wallet RPCs are SYNCHRONOUS IPC: calling them from inside a
+    // request handler wedged the whole route, and /v1/status went from answering instantly
+    // to HTTP 000 after 30s — the handler cannot return until the IPC replies, and the
+    // reply cannot be delivered until the handler returns. Measured, not theorised.
+    //
+    // Polling on a timer also stops the wallet RPC being hit once per phone poll forever,
+    // which it was.
+    if (!m_primaryAddress.isEmpty()) o["primaryAddress"] = m_primaryAddress;
+    if (!m_balanceRaw.isEmpty())     o["balanceRaw"] = m_balanceRaw;
+    if (!m_balance.isEmpty())        o["balance"] = m_balance;
+    if (!m_balanceError.isEmpty())   o["balanceError"] = m_balanceError;
     return QJsonDocument(o).toJson(QJsonDocument::Compact).toStdString();
+}
+
+// Refresh the cached wallet figures. Runs on the module's timer, NOT on a request.
+void NodeRemoteImpl::refreshBalance()
+{
+    if (!isContextReady()) return;
+
+    const StdLogosResult addrs = modules().blockchain_module.wallet_get_known_addresses();
+    if (!addrs.success) {
+        // Instance-bound: the wallet RPCs answer only in the blockchain_module that is
+        // actually running the node. Keep the last good figure and say why it is stale.
+        m_balanceError = QString::fromStdString(addrs.error);
+        return;
+    }
+    m_balanceError.clear();
+
+    QString primary;
+    const QJsonDocument ad = QJsonDocument::fromJson(QByteArray::fromStdString(addrs.value.dump()));
+    if (ad.isArray() && !ad.array().isEmpty())      primary = ad.array().first().toString();
+    else if (ad.isObject())                         primary = ad.object().value("address").toString();
+    if (primary.isEmpty()) return;
+    m_primaryAddress = primary;
+
+    const StdLogosResult bal = modules().blockchain_module.wallet_get_balance(primary.toStdString());
+    if (!bal.success) return;
+    const QString raw = QString::fromStdString(bal.value.dump()).remove('"');
+    bool okNum = false;
+    const double v = raw.toDouble(&okNum);
+    m_balanceRaw = raw;
+    // Kept for older clients; the phone formats from balanceRaw with 1-click's algorithm.
+    if (okNum) m_balance = QString::number(v / 10000.0, 'f', 4);
 }
 
 void NodeRemoteImpl::onContextReady()
 {
+    // Resume a pairing across a Basecamp restart. Everything needed already survives on
+    // disk — the onion keys, authorized_clients/, the bearer token — so the ONLY reason a
+    // paired phone had to scan a new QR was that nothing started tor and the HTTP surface
+    // again. It is the same .onion and the same key, so the phone reconnects on its own.
+    //
+    // Deferred, not called inline: startRemote() spawns tor and binds a socket, and doing
+    // that during module init is how the platform's 80s-startup stalls happen.
+    if (!m_onion->authorizedClients().isEmpty() && !loadToken().empty()) {
+        QTimer::singleShot(2500, m_onion, [this] {
+            if (m_port == 0) startRemote();
+        });
+    }
+
     // The ONE push channel blockchain_module offers. Everything else is polled.
     modules().blockchain_module.onNewBlock([this](const std::string& blockJson) {
         const QString ts = QDateTime::currentDateTimeUtc().toString(Qt::ISODate);
         m_blocks->append(ts, QString::fromStdString(blockJson));
     });
+
+    // Wallet figures on a timer, off the request path. 15s matches the phone's poll, so the
+    // number is never more than one cycle stale.
+    if (!m_balanceTimer) {
+        m_balanceTimer = new QTimer(m_onion);
+        QObject::connect(m_balanceTimer, &QTimer::timeout, m_onion, [this] { refreshBalance(); });
+        m_balanceTimer->start(15000);
+        QTimer::singleShot(3000, m_onion, [this] { refreshBalance(); });
+    }
 }
 
 std::string NodeRemoteImpl::wipeDatabase()
@@ -387,6 +423,38 @@ std::string NodeRemoteImpl::beginPairing(const std::string& label)
     return dump(r);
 }
 
+std::string NodeRemoteImpl::lastSeenPath() const
+{
+    return (QStandardPaths::writableLocation(QStandardPaths::AppDataLocation)
+            + "/node_remote/last_seen").toStdString();
+}
+
+void NodeRemoteImpl::persistLastSeenThrottled() const
+{
+    // Once a minute at most. The phone polls every 10-15s and this runs on the request
+    // path; writing on every authenticated request would be a file write per poll, forever,
+    // to record a number whose precision does not matter.
+    const long long now = QDateTime::currentSecsSinceEpoch();
+    if (now - m_lastSeenPersistedAt < 60) return;
+    m_lastSeenPersistedAt = now;
+    const QString path = QString::fromStdString(lastSeenPath());
+    QFile f(path);
+    QDir().mkpath(QFileInfo(path).absolutePath());
+    if (!f.open(QIODevice::WriteOnly | QIODevice::Truncate)) return;
+    f.setPermissions(QFileDevice::ReadOwner | QFileDevice::WriteOwner);
+    f.write(QByteArray::number(static_cast<qlonglong>(now)));
+    f.close();
+}
+
+long long NodeRemoteImpl::loadLastSeen() const
+{
+    QFile f(QString::fromStdString(lastSeenPath()));
+    if (!f.open(QIODevice::ReadOnly)) return 0;
+    const long long v = f.readAll().trimmed().toLongLong();
+    f.close();
+    return v;
+}
+
 std::string NodeRemoteImpl::tokenPath() const
 {
     return (QStandardPaths::writableLocation(QStandardPaths::AppDataLocation)
@@ -504,6 +572,14 @@ std::string NodeRemoteImpl::revokeClient(const std::string& name)
 {
     QJsonObject r;
     r["ok"] = m_onion->revokeClient(QString::fromStdString(name));
+    // Last device gone: drop the token and last-seen too, so the next launch does not
+    // auto-start a surface for a device that can no longer reach it, and the pane offers
+    // pairing rather than claiming a phone it revoked.
+    if (m_onion->authorizedClients().isEmpty()) {
+        QFile::remove(QString::fromStdString(tokenPath()));
+        QFile::remove(QString::fromStdString(lastSeenPath()));
+        m_http->forgetLastAuthed();
+    }
     return dump(r);
 }
 

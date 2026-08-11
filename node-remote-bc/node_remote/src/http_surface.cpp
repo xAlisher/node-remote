@@ -30,6 +30,7 @@ bool HttpSurface::authorized(const QHttpServerRequest& req) const
     // Stamped only on success, so a wrong-token caller cannot make the desktop claim a
     // device is connected. This is the desktop's only evidence that a phone exists.
     m_lastAuthedAt = QDateTime::currentSecsSinceEpoch();
+    if (m_onAuthed) m_onAuthed();
     return true;
 }
 

@@ -1,9 +1,11 @@
 #pragma once
 
+#include <QString>
 #include <string>
 #include "logos_module_context.h"
 
 class OnionService;
+class QTimer;
 class BlockStore;
 class HttpSurface;
 
@@ -121,6 +123,22 @@ private:
     std::string tokenPath() const;
     void        persistToken(const std::string& token) const;
     std::string loadToken() const;
+
+    // Last-seen is persisted so a restart does not forget an existing pairing. Throttled:
+    // this is written from the request path.
+    // std::string / long long, not QString / qint64 — this header stays Qt-free (the
+    // universal codegen parses it) and I had just broken that rule two lines after writing
+    // it down for the token helpers.
+    std::string lastSeenPath() const;
+    void        persistLastSeenThrottled() const;
+    long long   loadLastSeen() const;
+    mutable long long m_lastSeenPersistedAt = 0;
+
+    // Wallet figures, refreshed on a timer and merged into status. NEVER fetched inside a
+    // request: the RPCs are synchronous IPC on the same event loop the HTTP server uses.
+    void refreshBalance();
+    QTimer* m_balanceTimer = nullptr;
+    QString m_primaryAddress, m_balanceRaw, m_balance, m_balanceError;
 
     OnionService* m_onion = nullptr;
     BlockStore*   m_blocks = nullptr;

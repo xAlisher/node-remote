@@ -21,6 +21,12 @@ separate machine — not inferred from a build succeeding.
   -PassertReleaseSigned` fails and produces no APK. With it, the release APK is signed
   `CN=Node Remote` / `6d80db34…51ae74` — confirmed with apksigner against the pinned digest,
   after the same build had once come out signed `CN=Peers`.
+- **Pairing survives a Basecamp restart.** After a full restart with nobody pressing
+  Show QR, tor came back on the SAME onion, `/v1/status` answered `200` with the persisted
+  bearer token, and `last_seen` was rewritten — so the phone reconnected on its own.
+- **The `Starting` state, on real data.** A node replaying its database reported
+  `{"status":"Starting","notice":"The node is replaying stored blocks to catch up…"}`
+  instead of an error with a Start button.
 - **Blocks.** The `onNewBlock` subscription delivers; `/v1/blocks` returned 100 blocks with
   the full field set (blockRoot, entropy, leaderKey, parentBlock…) against a live node.
 
@@ -34,6 +40,8 @@ Say so rather than implying coverage:
   running the node, so this cannot be exercised in a headless harness.
 - **Blend `Inactive`.** The Bootstrapping case now reports Inactive rather than Unknown,
   following 1-click. Deployed, not yet seen on screen.
+- **Balance.** Now cached off the request path; the figure itself still has not been
+  observed on the phone.
 - **Three notification events** — Bootstrapping, Balance changed, Block proposed — are wired
   but have never fired live.
 - **The honest-error table** is a faithful port of `logos_node_1click`'s mapping but has not
