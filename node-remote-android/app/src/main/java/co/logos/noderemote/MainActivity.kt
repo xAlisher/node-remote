@@ -1,12 +1,17 @@
 package co.logos.noderemote
 
+import android.Manifest
 import android.content.Context
+import android.content.pm.PackageManager
 import android.net.ConnectivityManager
 import android.net.NetworkCapabilities
 import android.net.Uri
+import android.os.Build
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.core.content.ContextCompat
 import androidx.activity.compose.setContent
 import com.journeyapps.barcodescanner.ScanContract
 import com.journeyapps.barcodescanner.ScanOptions
@@ -89,6 +94,41 @@ class MainActivity : ComponentActivity() {
         val scope = rememberCoroutineScope()
         val onion = remember(uri) { parse(uri)?.first.orEmpty() }
 
+        // POST_NOTIFICATIONS is a RUNTIME permission from API 33 (we target 36). Declaring
+        // it in the manifest is not enough — without the grant every notify() is silently
+        // dropped by the system, which is exactly why no alert had ever fired: the app was
+        // posting into a void and logging success. Verified on device: granted=false.
+        val notifPerm = rememberLauncherForActivityResult(
+            ActivityResultContracts.RequestPermission()) { granted ->
+            // Denial is a legitimate choice, not an error. The watcher still runs and the
+            // in-app status is unaffected; only the alerts are silent, so say that once
+            // rather than nagging.
+            if (!granted) note = "Notifications are off in Android settings — " +
+                                 "status still updates while the app is open"
+        }
+        fun ensureNotificationPermission() {
+            if (Build.VERSION.SDK_INT < 33) return
+            if (ContextCompat.checkSelfPermission(
+                    this@MainActivity, Manifest.permission.POST_NOTIFICATIONS)
+                == PackageManager.PERMISSION_GRANTED) return
+            notifPerm.launch(Manifest.permission.POST_NOTIFICATIONS)
+        }
+
+        // The background watcher's lifecycle IS the "Show notifications" toggle: on means a
+        // foreground service polling in the background, off means no service at all — no
+        // permanent notification and no battery cost. Previously nothing started it on the
+        // pairing path, so a freshly paired phone watched nothing until a setting was
+        // toggled by hand.
+        fun syncWatcher() {
+            if (uri.isEmpty()) { MonitorService.stop(this@MainActivity); return }
+            if (Settings(this@MainActivity).showNotifications) {
+                ensureNotificationPermission()
+                MonitorService.start(this@MainActivity, uri, token, 15)
+            } else {
+                MonitorService.stop(this@MainActivity)
+            }
+        }
+
         suspend fun connect() {
             val p = parse(uri) ?: run { note = "bad pairing URI"; return }
             wantConnected = true
@@ -106,6 +146,9 @@ class MainActivity : ComponentActivity() {
                 .onFailure { note = "client auth failed: ${it.message}" }
             note = ""
             link = Link.CONNECTED
+            // Only now — a watcher started before the circuit is up would spend its first
+            // polls failing and could fire a spurious "can't reach your node".
+            syncWatcher()
         }
 
         // ZXing scanner. Returns the raw QR text; the launcher handles the camera
@@ -345,10 +388,10 @@ class MainActivity : ComponentActivity() {
                         onRegenerate = { confirm = "regenerate" },
                         settings = Settings(this@MainActivity),
                         onChanged = {
-                            // Restart the watcher so a change takes effect now rather than
-                            // at the next app launch.
-                            if (uri.isNotEmpty())
-                                MonitorService.start(this@MainActivity, uri, token, 15)
+                            // Re-evaluate rather than unconditionally start: turning the
+                            // master switch OFF has to STOP the service, and the old code
+                            // restarted it on every change including that one.
+                            syncWatcher()
                         },
                         onDisconnect = {
                             MonitorService.stop(this@MainActivity)

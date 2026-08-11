@@ -3,7 +3,9 @@ package co.logos.noderemote
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -420,6 +422,57 @@ private fun Empty(text: String) {
  * The event set mirrors what the ecodev watcher (logos-node-monitor.py) tracks, so the
  * phone alerts on the same things the desktop indicator turns red for.
  */
+/**
+ * Quiet hours as two hour pickers. Equal values mean OFF — that is the storage format the
+ * service already uses, surfaced rather than reinvented.
+ *
+ * Hour granularity, not minutes: this suppresses node alarms overnight, and nobody needs
+ * 22:45 precision for that. A full time picker would be more UI for no more capability.
+ */
+@Composable
+private fun QuietHoursRow(settings: Settings, enabled: Boolean, onChanged: () -> Unit) {
+    var from by remember { mutableIntStateOf(settings.quietFrom) }
+    var to by remember { mutableIntStateOf(settings.quietTo) }
+    val on = from != to
+    val dim = if (enabled) LogosColors.white else LogosColors.gray400
+
+    Column(Modifier.fillMaxWidth().padding(vertical = 10.dp)) {
+        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+            Column(Modifier.weight(1f)) {
+                Text("Quiet hours", style = MaterialTheme.typography.bodyLarge, color = dim)
+                Text(if (on) "Alerts are held between %02d:00 and %02d:00".format(from, to)
+                     else "Off — alerts arrive at any hour",
+                     style = MaterialTheme.typography.bodySmall,
+                     color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+            HourPicker(from, enabled) { from = it; settings.quietFrom = it; onChanged() }
+            Text("→", color = MaterialTheme.colorScheme.onSurfaceVariant,
+                 modifier = Modifier.padding(horizontal = 6.dp))
+            HourPicker(to, enabled) { to = it; settings.quietTo = it; onChanged() }
+        }
+    }
+}
+
+/** Tap to advance an hour, long-press to go back — a compact stepper without a dialog. */
+@OptIn(ExperimentalFoundationApi::class)
+@Composable
+private fun HourPicker(value: Int, enabled: Boolean, onSet: (Int) -> Unit) {
+    Surface(
+        color = LogosColors.gray875,
+        shape = MaterialTheme.shapes.small,
+        modifier = Modifier.combinedClickable(
+            enabled = enabled,
+            onClick = { onSet((value + 1) % 24) },
+            onLongClick = { onSet((value + 23) % 24) },
+        ),
+    ) {
+        Text("%02d".format(value),
+             modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+             color = if (enabled) LogosColors.white else LogosColors.gray400,
+             style = MaterialTheme.typography.bodyMedium)
+    }
+}
+
 @Composable
 fun SettingsPage(settings: Settings, onChanged: () -> Unit, onDisconnect: () -> Unit,
                  onWipe: () -> Unit = {}, onRegenerate: () -> Unit = {},
@@ -445,6 +498,11 @@ fun SettingsPage(settings: Settings, onChanged: () -> Unit, onDisconnect: () -> 
             enabled = master,
             onCheck = { priv = it; settings.privateNotifications = it; onChanged() },
         )
+
+        // Quiet hours. The service has honoured these since it was written, but nothing
+        // could SET them — quietFrom and quietTo stayed 0/0, which the code reads as
+        // "disabled", so the feature existed only in the source.
+        QuietHoursRow(settings, enabled = master, onChanged = onChanged)
 
         HorizontalDivider(Modifier.padding(vertical = 14.dp),
                           color = MaterialTheme.colorScheme.outlineVariant)
