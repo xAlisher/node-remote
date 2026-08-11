@@ -10,6 +10,9 @@ import org.json.JSONObject
  * beyond the poll the UI already needs.
  */
 data class NodeState(
+    /** The DESKTOP answered our request. Says nothing about the node itself. */
+    val answered: Boolean = false,
+    /** The desktop reached the NODE's API. Only meaningful when [answered]. */
     val reachable: Boolean = false,
     val status: String = "",        // Running | Starting | Stopped | NotRunning | …
     val state: String = "",         // Online | Bootstrapping
@@ -24,6 +27,7 @@ data class NodeState(
         fun parse(json: String, now: Long): NodeState = runCatching {
             val o = JSONObject(json)
             NodeState(
+                answered = true,
                 reachable = o.optBoolean("reachable", false),
                 status = o.optString("status"),
                 state = o.optString("state"),
@@ -34,22 +38,41 @@ data class NodeState(
                 error = o.optString("error"),
                 atMillis = now,
             )
-        }.getOrElse { NodeState(reachable = false, error = "unparseable", atMillis = now) }
+        }.getOrElse { NodeState(answered = true, error = "unparseable", atMillis = now) }
 
         /** Marker for "we could not reach the desktop at all" — distinct from "node is down". */
         fun unreachable(now: Long, why: String) =
-            NodeState(reachable = false, status = "Unreachable", error = why, atMillis = now)
+            NodeState(answered = false, status = "Unreachable", error = why, atMillis = now)
     }
 }
 
-/** A notifiable event. `key` is the settings toggle; `defaultOn` is its default. */
-enum class Event(val key: String, val title: String, val defaultOn: Boolean) {
-    NODE_STOPPED("n_stopped", "Node stopped", true),
-    NODE_ERROR("n_error", "Node error", true),
-    NODE_STARTED("n_started", "Node started", false),
-    SYNC_STALLED("n_stalled", "Sync stalled", false),
-    PEERS_ZERO("n_peers0", "No peers", false),
-    LINK_LOST("n_link", "Can't reach your node", false),
+/**
+ * A notifiable event. `key` is the settings toggle; `defaultOn` is its default.
+ *
+ * The set is grounded in what the ecodev watcher (infra/.../logos-node-monitor.py) actually
+ * tracks — mode, height, peers, balance, error — rather than invented. That watcher's three
+ * states are Online (green), Bootstrapping (yellow) and Offline (red, BLINKING), which is a
+ * clear signal about which transition a node runner treats as an alarm.
+ */
+enum class Event(val key: String, val title: String, val blurb: String, val defaultOn: Boolean) {
+    NODE_STOPPED("n_stopped", "Node stopped",
+        "It was running and now it isn't", true),
+    NODE_ERROR("n_error", "Node error",
+        "The node reported a problem", true),
+    LINK_LOST("n_link", "Can't reach your node",
+        "Your phone lost the connection — the node may be fine", false),
+    BOOTSTRAPPING("n_boot", "Bootstrapping",
+        "Catching up with the chain instead of following it", false),
+    SYNC_STALLED("n_stalled", "Sync stalled",
+        "Height hasn't moved for 10 minutes while running", false),
+    PEERS_ZERO("n_peers0", "No peers",
+        "Lost every peer connection", false),
+    NODE_STARTED("n_started", "Node started",
+        "Came back up", false),
+    BALANCE_CHANGED("n_balance", "Balance changed",
+        "Usually a leader reward landing", false),
+    NEW_PROPOSAL("n_proposal", "Block proposed",
+        "This node won a leader slot and produced a block", false),
 }
 
 data class Notice(val event: Event, val text: String)
@@ -89,6 +112,11 @@ object Transitions {
 
             if (prev.peers > 0 && cur.peers == 0)
                 out += Notice(Event.PEERS_ZERO, "Node has no peers")
+
+            // Bootstrapping is the watcher's yellow state — worth knowing, not an alarm.
+            if (!prev.state.equals("Bootstrapping", true) &&
+                cur.state.equals("Bootstrapping", true))
+                out += Notice(Event.BOOTSTRAPPING, "Node is bootstrapping (catching up)")
 
             // Stall: Running, height not advancing for STALL_MILLIS. stalledSinceMillis is
             // held by the caller so this stays a pure function of the two frames + a clock.

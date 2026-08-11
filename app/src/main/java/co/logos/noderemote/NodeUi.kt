@@ -1,5 +1,6 @@
 package co.logos.noderemote
 
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
@@ -11,7 +12,14 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.geometry.CornerRadius
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.StrokeJoin
+import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontFamily
@@ -75,7 +83,7 @@ fun StatusTab(s: NodeState, raw: String) {
     Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(16.dp),
            verticalArrangement = Arrangement.spacedBy(12.dp)) {
 
-        NodeStatePill(s)
+        NodeStateBlock(s)
 
         Row(horizontalArrangement = Arrangement.spacedBy(12.dp), modifier = Modifier.fillMaxWidth()) {
             Tile("Height", if (s.height >= 0) "${s.height}" else "—", Modifier.weight(1f))
@@ -86,8 +94,11 @@ fun StatusTab(s: NodeState, raw: String) {
             Tile("Connections", o?.optString("connections")?.ifEmpty { null } ?: "—", Modifier.weight(1f))
         }
         Row(horizontalArrangement = Arrangement.spacedBy(12.dp), modifier = Modifier.fillMaxWidth()) {
-            Tile("Balance", o?.optString("balance")?.ifEmpty { null } ?: "—",
-                 Modifier.weight(1f), accent = LogosColors.orange300)
+            // Orange is for a real value. An unknown balance is grey like any other
+            // missing field — colouring a dash draws the eye to nothing.
+            val balance = o?.optString("balance")?.ifEmpty { null }
+            Tile("Balance", balance ?: "—", Modifier.weight(1f),
+                 accent = if (balance != null) LogosColors.orange300 else LogosColors.gray400)
             // Blend is the mix-network role: Edge (uses it) vs Core (relays for others).
             val blend = o?.optString("blendStatus")?.ifEmpty { null } ?: "—"
             val bp = o?.optInt("blendPeers", -1) ?: -1
@@ -105,15 +116,6 @@ fun StatusTab(s: NodeState, raw: String) {
                  color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
 
-        if (s.error.isNotEmpty()) {
-            Card(colors = CardDefaults.cardColors(
-                containerColor = MaterialTheme.colorScheme.errorContainer)) {
-                Text(s.error, Modifier.padding(12.dp),
-                     style = MaterialTheme.typography.bodySmall,
-                     color = MaterialTheme.colorScheme.onErrorContainer)
-            }
-        }
-
         // Identifiers get their own block with copy affordances — they are long hex that
         // nobody retypes, so the only useful interaction is copying.
         if (o != null) {
@@ -129,36 +131,44 @@ fun StatusTab(s: NodeState, raw: String) {
 }
 
 /**
- * The NODE's state, in logos_node_1click's exact vocabulary:
- * Bootstrapping / Online / Not Started (NodeDashboardView.qml:63).
- * Connection state is deliberately NOT shown here — it lives under the title, because
- * conflating "my node is up" with "my phone can reach it" is how you end up staring at a
- * red pill wondering which one broke.
+ * The NODE's state as a full-width block: "Status" on the left, the value on the right,
+ * tinted to match. Vocabulary is logos_node_1click's exact set — Bootstrapping / Online /
+ * Not Started (NodeDashboardView.qml:63).
+ *
+ * Connection state is deliberately NOT here; it lives under the title. Conflating "my node
+ * is up" with "my phone can reach it" is how you end up staring at a red block wondering
+ * which of the two broke.
+ *
+ * Red is reserved for an ACTUAL error reported by the node, not for "we could not reach
+ * it" — those are different problems and colouring them the same trains you to ignore both.
  */
 @Composable
-private fun NodeStatePill(s: NodeState) {
+private fun NodeStateBlock(s: NodeState) {
+    val err = s.error.takeIf { it.isNotEmpty() && s.reachable }
     val (label, color) = when {
+        !s.answered -> "Waiting for data…" to LogosColors.gray400
+        err != null -> "Error" to LogosColors.red500
         !s.reachable -> "Unknown" to LogosColors.gray400
         s.state.equals("Online", true) -> "Online" to LogosColors.green500
         s.state.equals("Bootstrapping", true) -> "Bootstrapping" to LogosColors.orange300
-        s.status == "Running" -> (s.state.ifEmpty { "Running" }) to LogosColors.orange300
+        s.status == "Running" -> s.state.ifEmpty { "Running" } to LogosColors.orange300
         else -> "Not Started" to LogosColors.red500
     }
-    Row(verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-        Surface(color = color.copy(alpha = 0.18f), shape = MaterialTheme.shapes.large) {
-            Row(Modifier.padding(horizontal = 14.dp, vertical = 10.dp),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                Box(Modifier.size(10.dp).background(color, RoundedCornerShape(5.dp)))
-                Text(label, fontWeight = FontWeight.Bold, color = LogosColors.white)
+    Surface(color = color.copy(alpha = 0.12f), shape = MaterialTheme.shapes.medium,
+            modifier = Modifier.fillMaxWidth()) {
+        Column(Modifier.padding(horizontal = 16.dp, vertical = 14.dp)) {
+            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                Text("Status", style = MaterialTheme.typography.labelLarge,
+                     color = MaterialTheme.colorScheme.onSurfaceVariant,
+                     modifier = Modifier.weight(1f))
+                Text(label, fontWeight = FontWeight.Bold, color = color)
             }
-        }
-        if (s.phase.isNotEmpty()) {
-            // Real, but not part of the established vocabulary — no other module shows it,
-            // so it is secondary rather than a headline.
-            Text("phase ${s.phase}", style = MaterialTheme.typography.labelMedium,
-                 color = MaterialTheme.colorScheme.onSurfaceVariant)
+            // The node's own words, verbatim. Paraphrasing an error is how you lose the
+            // one string that would have told you what actually happened.
+            if (err != null) {
+                Spacer(Modifier.height(6.dp))
+                Text(err, style = MaterialTheme.typography.bodySmall, color = LogosColors.red500)
+            }
         }
     }
 }
@@ -191,10 +201,44 @@ private fun CopyRow(label: String, value: String) {
                  style = MaterialTheme.typography.bodySmall,
                  maxLines = 2, overflow = TextOverflow.Ellipsis)
         }
-        TextButton(onClick = { clip.setText(AnnotatedString(value)); copied = true }) {
-            Text(if (copied) "Copied" else "Copy",
-                 color = if (copied) LogosColors.green500 else LogosColors.orange300)
+        IconButton(onClick = { clip.setText(AnnotatedString(value)); copied = true }) {
+            CopyGlyph(if (copied) LogosColors.green500 else LogosColors.gray400)
         }
+    }
+}
+
+/**
+ * Lucide's `copy` icon, drawn to its real geometry rather than approximated:
+ *   <rect width="14" height="14" x="8" y="8" rx="2"/>
+ *   <path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"/>
+ * on a 24x24 grid, stroke 2, round caps and joins. The back shape is an L (not a full
+ * rect) so it reads as a sheet BEHIND the front one instead of two stacked outlines.
+ */
+@Composable
+private fun CopyGlyph(tint: Color) {
+    Canvas(Modifier.size(18.dp)) {
+        val u = size.minDimension / 24f          // Lucide's grid unit
+        val stroke = Stroke(width = 2f * u, cap = StrokeCap.Round, join = StrokeJoin.Round)
+
+        // Front sheet: rounded rect at (8,8), 14x14, r=2
+        drawRoundRect(
+            color = tint,
+            topLeft = Offset(8f * u, 8f * u),
+            size = Size(14f * u, 14f * u),
+            cornerRadius = CornerRadius(2f * u, 2f * u),
+            style = stroke,
+        )
+
+        // Back sheet: the visible L, with 2-unit rounded corners.
+        val p = Path().apply {
+            moveTo(4f * u, 16f * u)
+            quadraticBezierTo(2f * u, 16f * u, 2f * u, 14f * u)   // bottom-left corner
+            lineTo(2f * u, 4f * u)
+            quadraticBezierTo(2f * u, 2f * u, 4f * u, 2f * u)     // top-left corner
+            lineTo(14f * u, 2f * u)
+            quadraticBezierTo(16f * u, 2f * u, 16f * u, 4f * u)   // top-right corner
+        }
+        drawPath(p, tint, style = stroke)
     }
 }
 
@@ -265,5 +309,86 @@ private fun Empty(text: String) {
     Box(Modifier.fillMaxSize().padding(32.dp), contentAlignment = Alignment.Center) {
         Text(text, style = MaterialTheme.typography.bodyMedium,
              color = MaterialTheme.colorScheme.onSurfaceVariant)
+    }
+}
+
+/**
+ * Notifications tab. Master switch, a privacy switch, then the per-event list.
+ *
+ * The event set mirrors what the ecodev watcher (logos-node-monitor.py) tracks, so the
+ * phone alerts on the same things the desktop indicator turns red for.
+ */
+@Composable
+fun NotificationsTab(settings: Settings, onChanged: () -> Unit) {
+    var master by remember { mutableStateOf(settings.showNotifications) }
+    var priv by remember { mutableStateOf(settings.privateNotifications) }
+    // Recomposition key: toggling a per-event switch has to redraw the row it lives in.
+    var rev by remember { mutableIntStateOf(0) }
+
+    Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(16.dp),
+           verticalArrangement = Arrangement.spacedBy(4.dp)) {
+
+        SwitchRow(
+            title = "Show notifications",
+            blurb = "Alerts while Node Remote watches in the background",
+            checked = master,
+            onCheck = { master = it; settings.showNotifications = it; onChanged() },
+        )
+        SwitchRow(
+            title = "Private notifications",
+            blurb = "Hide the contents on the lock screen",
+            checked = priv,
+            enabled = master,
+            onCheck = { priv = it; settings.privateNotifications = it; onChanged() },
+        )
+
+        HorizontalDivider(Modifier.padding(vertical = 14.dp),
+                          color = MaterialTheme.colorScheme.outlineVariant)
+
+        Text("Notify me about", style = MaterialTheme.typography.labelLarge,
+             color = MaterialTheme.colorScheme.onSurfaceVariant,
+             modifier = Modifier.padding(bottom = 6.dp))
+
+        key(rev) {
+            Event.entries.forEach { e ->
+                SwitchRow(
+                    title = e.title,
+                    blurb = e.blurb,
+                    checked = settings.enabledRaw(e),
+                    enabled = master,
+                    onCheck = { settings.setEnabled(e, it); rev++; onChanged() },
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun SwitchRow(
+    title: String,
+    blurb: String,
+    checked: Boolean,
+    enabled: Boolean = true,
+    onCheck: (Boolean) -> Unit,
+) {
+    Row(Modifier.fillMaxWidth().padding(vertical = 10.dp),
+        verticalAlignment = Alignment.CenterVertically) {
+        Column(Modifier.weight(1f).padding(end = 12.dp)) {
+            Text(title, fontWeight = FontWeight.Medium,
+                 color = if (enabled) LogosColors.white else LogosColors.gray400)
+            Text(blurb, style = MaterialTheme.typography.bodySmall,
+                 color = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
+        Switch(
+            checked = checked && enabled,
+            enabled = enabled,
+            onCheckedChange = onCheck,
+            colors = SwitchDefaults.colors(
+                checkedThumbColor = LogosColors.gray900,
+                checkedTrackColor = LogosColors.orange300,
+                uncheckedTrackColor = LogosColors.gray320,
+                uncheckedBorderColor = LogosColors.gray300,
+            ),
+        )
     }
 }

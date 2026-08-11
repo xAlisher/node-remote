@@ -118,12 +118,18 @@ class MonitorService : Service() {
     }
 
     private fun notify(n: Notice) {
+        val prefs = Settings(this)
         val note = NotificationCompat.Builder(this, CH_ALERT)
             .setContentTitle(n.event.title)
             .setContentText(n.text)
             .setSmallIcon(android.R.drawable.stat_sys_warning)
             .setPriority(NotificationCompat.PRIORITY_HIGH)
             .setAutoCancel(true)
+            // VISIBILITY_SECRET hides it from the lock screen entirely; PRIVATE would still
+            // show the title. SECRET is what "private" should mean to a user.
+            .setVisibility(if (prefs.privateNotifications)
+                               NotificationCompat.VISIBILITY_SECRET
+                           else NotificationCompat.VISIBILITY_PUBLIC)
             .build()
         getSystemService(NotificationManager::class.java)
             .notify(n.event.ordinal + 100, note)
@@ -155,7 +161,22 @@ class MonitorService : Service() {
 class Settings(ctx: Context) {
     private val sp = ctx.getSharedPreferences("node_remote", Context.MODE_PRIVATE)
 
-    fun enabled(e: Event): Boolean = sp.getBoolean(e.key, e.defaultOn)
+    /** Master switch. Off means the service posts nothing at all. */
+    var showNotifications: Boolean
+        get() = sp.getBoolean("notif_on", true)
+        set(v) = sp.edit().putBoolean("notif_on", v).apply()
+
+    /** Hide the content on the lock screen — the alert still arrives, but a passer-by
+     *  sees only the app name, not your node's state. */
+    var privateNotifications: Boolean
+        get() = sp.getBoolean("notif_private", false)
+        set(v) = sp.edit().putBoolean("notif_private", v).apply()
+
+    fun enabled(e: Event): Boolean = showNotifications && enabledRaw(e)
+
+    /** The row's own setting, ignoring the master switch — so turning the master off
+     *  greys the list rather than appearing to wipe every choice. */
+    fun enabledRaw(e: Event): Boolean = sp.getBoolean(e.key, e.defaultOn)
     fun setEnabled(e: Event, on: Boolean) = sp.edit().putBoolean(e.key, on).apply()
 
     /** Quiet hours as local wall-clock hours [from,to); disabled when equal. */

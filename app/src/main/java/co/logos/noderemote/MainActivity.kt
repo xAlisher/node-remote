@@ -8,11 +8,15 @@ import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.background
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -145,8 +149,12 @@ class MainActivity : ComponentActivity() {
         }
 
         val connected = wantConnected
-        val running = state.reachable && state.state.equals("Online", true) ||
-                      (state.reachable && state.status == "Running")
+        // Only a frame the DESKTOP answered counts. A failed fetch is not knowledge of
+        // the node's state, and treating it as such made the app show "Start node" —
+        // asserting the node was down — before it had connected at all.
+        val hasData = state.answered
+        val running = state.reachable && (state.state.equals("Online", true) ||
+                                          state.status == "Running")
 
         // Destructive-ish and remote: stopping a node from a phone by accident is a bad
         // afternoon, so it goes through a confirm rather than firing on tap.
@@ -188,25 +196,35 @@ class MainActivity : ComponentActivity() {
                     }
                 },
                 actions = {
-                    if (connected) {
-                        // Compact chip, not a large CTA — this is a rare action, not the
-                        // primary one. Label says what it does to WHAT ("Stop node").
-                        Surface(
-                            shape = RoundedCornerShape(10.dp),
-                            color = if (running) LogosColors.white else LogosColors.green500,
-                            modifier = Modifier.padding(end = 12.dp),
+                    if (connected && !hasData) {
+                        // We do not know the node's state yet. Showing "Start node" here
+                        // would assert the node is down, which we have not established.
+                        CircularProgressIndicator(
+                            modifier = Modifier.padding(end = 20.dp).size(20.dp),
+                            strokeWidth = 2.dp,
+                            color = LogosColors.orange300,
+                        )
+                    } else if (connected) {
+                        // Plain icon + label, no chip background — a rare action, not the
+                        // primary one on screen.
+                        TextButton(
+                            enabled = !busy && state.reachable,
+                            onClick = { confirm = if (running) "stop" else "start" },
+                            modifier = Modifier.padding(end = 6.dp),
                         ) {
-                            TextButton(
-                                enabled = !busy && state.reachable,
-                                onClick = { confirm = if (running) "stop" else "start" },
-                                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 2.dp),
-                            ) {
-                                Text(
-                                    if (busy) "…" else if (running) "Stop node" else "▶ Start node",
-                                    color = LogosColors.gray900,
-                                    fontWeight = FontWeight.Medium,
-                                    fontSize = 13.sp,
-                                )
+                            // Dim when disabled: an explicit tint otherwise renders a
+                            // dead button in full colour, which invites taps that do nothing.
+                            val on = !busy && state.reachable
+                            val tint = (if (running) LogosColors.white else LogosColors.green500)
+                                .copy(alpha = if (on) 1f else 0.38f)
+                            if (busy) {
+                                CircularProgressIndicator(Modifier.size(16.dp),
+                                                          strokeWidth = 2.dp, color = tint)
+                            } else {
+                                if (running) StopGlyph(tint) else PlayGlyph(tint)
+                                Spacer(Modifier.width(8.dp))
+                                Text(if (running) "Stop node" else "Start node",
+                                     color = tint, fontWeight = FontWeight.Medium, fontSize = 14.sp)
                             }
                         }
                     }
@@ -234,12 +252,15 @@ class MainActivity : ComponentActivity() {
                     }
                 } else {
                     // Active tab in primary orange; the rest plain white.
-                    TabRow(
+                    // ScrollableTabRow: with four tabs a fixed row squeezes "Proposals"
+                    // onto two lines. edgePadding 0 keeps it flush left.
+                    ScrollableTabRow(
                         selectedTabIndex = tab,
                         containerColor = LogosColors.gray900,
                         contentColor = LogosColors.orange300,
+                        edgePadding = 0.dp,
                     ) {
-                        listOf("Status", "Blocks", "Proposals").forEachIndexed { i, t ->
+                        listOf("Status", "Blocks", "Proposals", "Alerts").forEachIndexed { i, t ->
                             Tab(selected = tab == i, onClick = { tab = i },
                                 selectedContentColor = LogosColors.orange300,
                                 unselectedContentColor = LogosColors.white,
@@ -254,10 +275,37 @@ class MainActivity : ComponentActivity() {
                     when (tab) {
                         0 -> StatusTab(state, rawStatus)
                         1 -> BlocksTab(blocks)
-                        else -> ProposalsTab(proposals)
+                        2 -> ProposalsTab(proposals)
+                        else -> NotificationsTab(Settings(this@MainActivity)) {
+                            // Restart the watcher so a settings change takes effect now
+                            // rather than at the next app launch.
+                            if (uri.isNotEmpty())
+                                MonitorService.start(this@MainActivity, uri, token, 15)
+                        }
                     }
                 }
             }
+        }
+    }
+
+    /** Filled square — the universal stop mark. */
+    @Composable
+    private fun StopGlyph(tint: Color) {
+        Box(Modifier.size(11.dp).background(tint, RoundedCornerShape(2.dp)))
+    }
+
+    /** Right-pointing triangle — play. Drawn so the app does not depend on
+     *  material-icons-extended (thousands of vectors) for two glyphs. */
+    @Composable
+    private fun PlayGlyph(tint: Color) {
+        Canvas(Modifier.size(12.dp)) {
+            val p = Path().apply {
+                moveTo(0f, 0f)
+                lineTo(size.width, size.height / 2f)
+                lineTo(0f, size.height)
+                close()
+            }
+            drawPath(p, tint)
         }
     }
 
