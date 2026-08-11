@@ -63,9 +63,9 @@ fun WelcomeScreen(
                  color = LogosColors.white)
 
             Text(
-                "Your node publishes a Tor onion service and this phone is the only device " +
-                "allowed to reach it. Your node's address stays private, and anyone who " +
-                "learns it still can't connect without the key you scan below.",
+                "Your node publishes a Tor onion service that only paired devices can " +
+                "reach. Anyone who learns the address can tell the service exists, but " +
+                "still can't connect without the key you scan below.",
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
