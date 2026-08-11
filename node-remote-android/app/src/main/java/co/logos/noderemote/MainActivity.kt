@@ -46,8 +46,12 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
-        val preUri = intent?.getStringExtra("uri").orEmpty()
-        val preTok = intent?.getStringExtra("token").orEmpty()
+        // An intent extra wins (a notification tap carries the pairing), otherwise fall back
+        // to the STORED pairing. Without the fallback a cold start always showed Welcome,
+        // however recently the phone had been paired.
+        val saved = Settings(this)
+        val preUri = intent?.getStringExtra("uri").orEmpty().ifEmpty { saved.pairUri }
+        val preTok = intent?.getStringExtra("token").orEmpty().ifEmpty { saved.pairToken }
         val auto = intent?.getBooleanExtra("auto", false) ?: false
 
         if (intent?.getBooleanExtra("monitor", false) == true && preUri.isNotEmpty())
@@ -131,6 +135,10 @@ class MainActivity : ComponentActivity() {
 
         suspend fun connect() {
             val p = parse(uri) ?: run { note = "bad pairing URI"; return }
+            // Persist BEFORE the network work: every path into the app funnels through here,
+            // and a pairing that is only saved on success is lost if the circuit is slow and
+            // Android reclaims the activity while we wait.
+            Settings(this@MainActivity).let { it.pairUri = uri; it.pairToken = token }
             wantConnected = true
             if (!hasInternet()) { link = Link.NO_INTERNET; return }
             link = Link.CONNECTING
@@ -237,7 +245,13 @@ class MainActivity : ComponentActivity() {
             refresh()
         }
 
-        LaunchedEffect(auto) { if (auto && !wantConnected) connect() }
+        // Reconnect on launch whenever we HAVE a pairing — not only when an intent said
+        // auto=true. A stored pairing means the user already paired this phone; making them
+        // press something to get back to a screen they never chose to leave is friction with
+        // no purpose. `auto` stays as an explicit override for the notification-tap path.
+        LaunchedEffect(auto, uri) {
+            if (!wantConnected && (auto || uri.isNotEmpty())) connect()
+        }
         LaunchedEffect(wantConnected) {
             while (wantConnected) { refresh(); delay(10_000) }
         }
@@ -394,6 +408,9 @@ class MainActivity : ComponentActivity() {
                             syncWatcher()
                         },
                         onDisconnect = {
+                            // Forget it locally too, or the next launch would reconnect to a
+                            // node that has just revoked us.
+                            Settings(this@MainActivity).clearPairing()
                             MonitorService.stop(this@MainActivity)
                             wantConnected = false
                             link = Link.DISCONNECTED

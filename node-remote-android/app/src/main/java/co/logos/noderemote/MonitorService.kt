@@ -161,6 +161,30 @@ class MonitorService : Service() {
 class Settings(ctx: Context) {
     private val sp = ctx.getSharedPreferences("node_remote", Context.MODE_PRIVATE)
 
+    /**
+     * The pairing itself: the lgnode:// URI (onion + client-auth key) and the bearer token.
+     *
+     * This has to be PERSISTED, not held in Compose state. It was held only in `remember`,
+     * seeded from an Intent extra — so backgrounding the app under memory pressure, or any
+     * process death, dropped a paired phone back to the welcome screen and demanded a new
+     * QR. The pairing survived nothing.
+     *
+     * Plain app-private SharedPreferences, deliberately. androidx.security's
+     * EncryptedSharedPreferences is deprecated and unmaintained, and app-private storage is
+     * already encrypted at rest by File-Based Encryption. Honest limit: this does NOT
+     * protect against a rooted device or forensic extraction from an unlocked phone. Anyone
+     * with that level of access can pair with your node — which is what "Disconnect"
+     * (revoking the key on the desktop) is for.
+     */
+    var pairUri: String
+        get() = sp.getString("pair_uri", "").orEmpty()
+        set(v) = sp.edit().putString("pair_uri", v).apply()
+    var pairToken: String
+        get() = sp.getString("pair_token", "").orEmpty()
+        set(v) = sp.edit().putString("pair_token", v).apply()
+
+    fun clearPairing() = sp.edit().remove("pair_uri").remove("pair_token").apply()
+
     /** Master switch. Off means the service posts nothing at all. */
     var showNotifications: Boolean
         get() = sp.getBoolean("notif_on", true)

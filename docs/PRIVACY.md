@@ -88,6 +88,12 @@ other than your own node over Tor. The app has no account and no server.
 What is stored on the phone: the pairing URI (onion address, client-auth key, bearer token)
 and your notification preferences. Nothing else. "Disconnect" removes them.
 
+That storage is app-private `SharedPreferences`, encrypted at rest by Android's File-Based
+Encryption and unreadable by other apps. It is **not** protected against a rooted device or
+forensic extraction from an unlocked phone — anyone with that access holds a working
+pairing. Revoking the device on the desktop is what actually cuts them off, and it takes
+effect immediately.
+
 What is stored on the desktop: the onion service keys, `authorized_clients/`, and the bearer
 token — all under the module's own data directory, owner-readable only.
 
