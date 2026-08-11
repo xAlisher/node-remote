@@ -228,6 +228,14 @@ class MainActivity : ComponentActivity() {
                         val o = org.json.JSONObject(body)
                         val err = o.optString("error")
                         when {
+                            // Regenerate is the one success worth a word: the module returns
+                            // the REAL backup path it just wrote, and that is precisely what
+                            // you need if the new config turns out wrong. Telling someone a
+                            // backup exists without naming it is not much better than silence.
+                            o.optBoolean("ok", false) && path == "regenerate" ->
+                                o.optString("backup").takeIf { it.isNotEmpty() }
+                                    ?.let { "Config regenerated. Previous file saved as $it" }
+                                    ?: ""
                             o.optBoolean("ok", false) -> ""       // success: nothing to say
                             // NOT an error: the request's INTENT was already satisfied.
                             // "The node is not running" in reply to a STOP is the desired
@@ -294,8 +302,14 @@ class MainActivity : ComponentActivity() {
                         "start" -> "The node will start with the config it is already set up with."
                         "wipe" -> "Deletes the chain database and consensus state. The node re-syncs " +
                                   "from genesis, which takes a while. Your wallet keys and config are kept."
-                        else -> "Rewrites user_config.yaml from the module's defaults. The current file " +
-                                "is backed up first, because it holds your leader key."
+                        else -> "Your node's settings file (user_config.yaml) is replaced with a " +
+                                "fresh one built from the module's defaults.\n\n" +
+                                "Before that, the current file is copied alongside it as " +
+                                "user_config.yaml.bak-<timestamp>. If the new one is wrong, " +
+                                "rename the backup back over it on the desktop.\n\n" +
+                                "Why the copy matters: that file holds consensus.wallet.funding_pk, " +
+                                "your leader identity. Anything you customised — peers, ports, " +
+                                "addresses — also reverts to defaults."
                     })
                 },
                 confirmButton = {

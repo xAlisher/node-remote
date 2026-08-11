@@ -542,8 +542,12 @@ fun SettingsPage(settings: Settings, onChanged: () -> Unit, onDisconnect: () -> 
 
         ActionRow(
             title = "Regenerate config",
-            blurb = "Rewrites user_config.yaml. The current one is backed up first — it " +
-                    "holds your leader key.",
+            // Say what happens to the file, in the order it happens, and name the thing you
+            // would go looking for. "Backed up first" told the reader nothing they could
+            // act on — backed up where, under what name, and to undo what?
+            blurb = "Replaces the node's settings file with a fresh default one. Your " +
+                    "current file is copied next to it as user_config.yaml.bak-<time> " +
+                    "first, so you can restore it by hand.",
             enabled = !nodeRunning,
             onClick = onRegenerate,
         )
