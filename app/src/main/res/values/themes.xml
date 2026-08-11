@@ -1,3 +1,9 @@
 <resources>
-    <style name="Theme.NodeRemote" parent="android:Theme.Material.NoActionBar"/>
+    <style name="Theme.NodeRemote" parent="android:Theme.Material.NoActionBar">
+        <!-- gray900 from the Logos design system. Without this the window flashes the
+             platform's light background before Compose draws its first frame. -->
+        <item name="android:windowBackground">#171717</item>
+        <item name="android:statusBarColor">#171717</item>
+        <item name="android:navigationBarColor">#171717</item>
+    </style>
 </resources>

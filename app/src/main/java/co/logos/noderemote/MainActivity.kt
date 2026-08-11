@@ -5,175 +5,172 @@ import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.text.selection.SelectionContainer
-import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
-import androidx.lifecycle.lifecycleScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-import org.json.JSONObject
+import okhttp3.MediaType.Companion.toMediaType
+import okhttp3.Request
+import okhttp3.RequestBody.Companion.toRequestBody
 
 /**
- * Node Remote — spike build.
- *
- * Paste the `lgnode://pair?…` URI that node_remote's beginPairing() produced (the QR
- * scanner comes later), and this will: start embedded Tor, register the client-auth key,
- * and pull live node status over the onion.
- *
- * The point of this build is to prove the hardest link in the chain on real hardware:
- * that a client-authorized v3 onion is reachable from kmp-tor. Everything else is UI.
+ * Node Remote — title bar with a Start/Stop control on the right, and three tabs
+ * (Status · Blocks · Proposals) whose fields mirror logos_node_1click.
  */
 class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        // Intent extras let adb drive the whole flow with no screen taps:
-        //   adb shell am start -n co.logos.noderemote/.MainActivity \
-        //     --es uri '<lgnode://…>' --es token '<tok>' --ez auto true
+
         val preUri = intent?.getStringExtra("uri").orEmpty()
         val preTok = intent?.getStringExtra("token").orEmpty()
-        val auto   = intent?.getBooleanExtra("auto", false) ?: false
-        // adb cannot call am start-foreground-service on our behalf ("Requires permission
-        // not exported from uid"), so the ACTIVITY starts the monitor instead.
-        if (intent?.getBooleanExtra("monitor", false) == true && preUri.isNotEmpty()) {
-            val period = intent?.getIntExtra("periodSec", 15) ?: 15
-            MonitorService.start(this, preUri, preTok, period)
-        }
+        val auto = intent?.getBooleanExtra("auto", false) ?: false
+
+        if (intent?.getBooleanExtra("monitor", false) == true && preUri.isNotEmpty())
+            MonitorService.start(this, preUri, preTok, intent?.getIntExtra("periodSec", 15) ?: 15)
         if (intent?.getBooleanExtra("stopMonitor", false) == true) MonitorService.stop(this)
-        // Test/ops hook: flip a notification toggle without a settings screen.
-        //   --es enableEvent n_link   /  --es disableEvent n_link
         intent?.getStringExtra("enableEvent")?.let { k ->
             Event.entries.find { it.key == k }?.let { Settings(this).setEnabled(it, true) }
         }
         intent?.getStringExtra("disableEvent")?.let { k ->
             Event.entries.find { it.key == k }?.let { Settings(this).setEnabled(it, false) }
         }
-        setContent { MaterialTheme { Screen(preUri, preTok, auto) } }
+
+        setContent { NodeRemoteTheme { App(preUri, preTok, auto) } }
     }
 
+    @OptIn(ExperimentalMaterial3Api::class)
     @Composable
-    private fun Screen(preUri: String = "", preTok: String = "", auto: Boolean = false) {
+    private fun App(preUri: String, preTok: String, auto: Boolean) {
         var uri by remember { mutableStateOf(preUri) }
         var token by remember { mutableStateOf(preTok) }
-        val log = remember { mutableStateListOf<String>() }
-        var status by remember { mutableStateOf("") }
+        var connected by remember { mutableStateOf(false) }
+        var tab by remember { mutableIntStateOf(0) }
+
+        var state by remember { mutableStateOf(NodeState()) }
+        var rawStatus by remember { mutableStateOf("") }
+        var blocks by remember { mutableStateOf<List<Block>>(emptyList()) }
+        var proposals by remember { mutableStateOf<List<Proposal>>(emptyList()) }
         var busy by remember { mutableStateOf(false) }
+        var note by remember { mutableStateOf("") }
 
-        fun logLine(s: String) { log.add(s); android.util.Log.i("NodeRemoteApp", s) }
+        val scope = rememberCoroutineScope()
+        val onion = remember(uri) { parse(uri)?.first.orEmpty() }
 
-        // Auto-run for adb-driven testing: start tor, then pair+fetch once it is up.
-        LaunchedEffect(auto) {
-            if (!auto) return@LaunchedEffect
-            logLineAuto("auto: starting tor")
-            TorClient.start(this@MainActivity) { logLineAuto(it) }
-            var waited = 0
-            while (TorClient.socksPort == 0 && waited < 120) { kotlinx.coroutines.delay(1000); waited++ }
-            if (TorClient.socksPort == 0) { logLineAuto("auto: no SOCKS port"); return@LaunchedEffect }
-            val p = parse(uri)
-            if (p == null) { logLineAuto("auto: bad URI"); return@LaunchedEffect }
-            val (onion, ca) = p
-            TorClient.addClientAuth(onion, ca)
-                .onSuccess { logLineAuto("auto: client auth registered") }
-                .onFailure { logLineAuto("auto: client auth FAILED: $it") }
-            val r = withContext(Dispatchers.IO) { TorClient.get("http://$onion/v1/status", token) }
-            r.onSuccess { logLineAuto("auto: STATUS_OK ${it.replace("\n"," ")}") }
-             .onFailure { logLineAuto("auto: STATUS_FAIL $it") }
+        suspend fun connect() {
+            val p = parse(uri) ?: run { note = "bad pairing URI"; return }
+            note = "starting Tor…"
+            TorClient.start(this@MainActivity) { android.util.Log.i(TAG, it) }
+            var w = 0
+            while (TorClient.socksPort == 0 && w < 180) { delay(1000); w++ }
+            if (TorClient.socksPort == 0) { note = "Tor did not start"; return }
+            TorClient.addClientAuth(p.first, p.second)
+                .onFailure { note = "client auth failed: ${it.message}" }
+            note = ""
+            connected = true
         }
 
-        Column(
-            Modifier.fillMaxSize().padding(16.dp).verticalScroll(rememberScrollState()),
-            verticalArrangement = Arrangement.spacedBy(10.dp)
-        ) {
-            Text("Node Remote", style = MaterialTheme.typography.headlineSmall)
-            Text("● Private · Tor onion — no third party can see this link exists",
-                 style = MaterialTheme.typography.bodySmall)
-
-            OutlinedTextField(uri, { uri = it }, label = { Text("lgnode:// pairing URI") },
-                              modifier = Modifier.fillMaxWidth(), maxLines = 4)
-            OutlinedTextField(token, { token = it }, label = { Text("device token") },
-                              modifier = Modifier.fillMaxWidth(), singleLine = true)
-
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                Button(onClick = {
-                    logLine("starting tor…")
-                    TorClient.start(this@MainActivity) { logLine(it) }
-                }) { Text("Start Tor") }
-
-                Button(enabled = !busy, onClick = {
-                    busy = true
-                    lifecycleScope.launch {
-                        val p = parse(uri)
-                        if (p == null) { logLine("bad URI"); busy = false; return@launch }
-                        val (onion, ca) = p
-                        logLine("pairing with $onion")
-                        // Tor must be up before the control command can be issued.
-                        var waited = 0
-                        while (TorClient.socksPort == 0 && waited < 90) {
-                            withContext(Dispatchers.IO) { Thread.sleep(1000) }; waited++
-                        }
-                        if (TorClient.socksPort == 0) {
-                            logLine("tor never opened a SOCKS port"); busy = false; return@launch
-                        }
-                        TorClient.addClientAuth(onion, ca)
-                            .onSuccess { logLine("client auth registered ✓") }
-                            .onFailure { logLine("client auth FAILED: $it") }
-
-                        val url = "http://$onion/v1/status"
-                        logLine("GET $url")
-                        val r = withContext(Dispatchers.IO) { TorClient.get(url, token) }
-                        r.onSuccess { body ->
-                            status = pretty(body)
-                            logLine("status ✓ (${body.length} bytes)")
-                        }.onFailure { logLine("status FAILED: $it") }
-                        busy = false
-                    }
-                }) { Text(if (busy) "Working…" else "Pair + Fetch") }
+        // One pass drives all three tabs. Blocks/proposals are cheap next to a Tor
+        // round-trip, so fetching them together beats three separate circuits.
+        suspend fun refresh() {
+            if (onion.isEmpty()) return
+            withContext(Dispatchers.IO) {
+                TorClient.get("http://$onion/v1/status", token)
+                    .onSuccess { rawStatus = it; state = NodeState.parse(it, System.currentTimeMillis()) }
+                    .onFailure { state = NodeState.unreachable(System.currentTimeMillis(), it.message.orEmpty()) }
+                TorClient.get("http://$onion/v1/blocks", token).onSuccess { blocks = Block.list(it) }
+                TorClient.get("http://$onion/v1/proposals", token).onSuccess { proposals = Proposal.list(it) }
             }
+            android.util.Log.i(TAG, "refresh status=${state.status} height=${state.height} " +
+                                    "blocks=${blocks.size} proposals=${proposals.size}")
+        }
 
-            if (status.isNotEmpty()) {
-                Card(Modifier.fillMaxWidth()) {
-                    SelectionContainer {
-                        Text(status, Modifier.padding(12.dp),
-                             fontFamily = FontFamily.Monospace,
+        suspend fun control(path: String) {
+            busy = true
+            note = if (path == "stop") "stopping…" else "starting…"
+            val r = withContext(Dispatchers.IO) {
+                runCatching {
+                    val req = Request.Builder()
+                        .url("http://$onion/v1/$path")
+                        .post("".toRequestBody("application/json".toMediaType()))
+                        .header("Authorization", "Bearer $token")
+                        .build()
+                    TorClient.http().newCall(req).execute().use { it.body?.string().orEmpty() }
+                }
+            }
+            note = r.getOrElse { "failed: ${it.message}" }.take(160)
+            android.util.Log.i(TAG, "control $path -> $note")
+            busy = false
+            refresh()
+        }
+
+        LaunchedEffect(auto) { if (auto && !connected) connect() }
+        LaunchedEffect(connected) { while (connected) { refresh(); delay(10_000) } }
+
+        Scaffold(topBar = {
+            TopAppBar(
+                title = { Text("Node Remote", fontWeight = FontWeight.Bold) },
+                actions = {
+                    // Start/Stop sits to the RIGHT of the title. One button, not two: the
+                    // label follows live state, so a "Stop" is never offered for a node
+                    // that is already stopped.
+                    val running = state.reachable && state.status == "Running"
+                    Button(
+                        enabled = connected && !busy && state.reachable,
+                        onClick = { scope.launch { control(if (running) "stop" else "start") } },
+                        modifier = Modifier.padding(end = 12.dp),
+                        colors = if (running)
+                            ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error)
+                        else ButtonDefaults.buttonColors(),
+                    ) { Text(if (busy) "…" else if (running) "Stop" else "Start") }
+                }
+            )
+        }) { pad ->
+            Column(Modifier.padding(pad).fillMaxSize()) {
+
+                if (!connected) {
+                    Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                        Text("● Private · Tor onion — no third party can see this link exists",
                              style = MaterialTheme.typography.bodySmall)
+                        OutlinedTextField(uri, { uri = it }, label = { Text("lgnode:// pairing URI") },
+                                          modifier = Modifier.fillMaxWidth(), maxLines = 4)
+                        OutlinedTextField(token, { token = it }, label = { Text("device token") },
+                                          modifier = Modifier.fillMaxWidth(), singleLine = true)
+                        Button(onClick = { scope.launch { connect() } }) { Text("Connect") }
+                        if (note.isNotEmpty()) Text(note, style = MaterialTheme.typography.bodySmall)
+                    }
+                } else {
+                    TabRow(selectedTabIndex = tab) {
+                        listOf("Status", "Blocks", "Proposals").forEachIndexed { i, t ->
+                            Tab(selected = tab == i, onClick = { tab = i }, text = { Text(t) })
+                        }
+                    }
+                    if (note.isNotEmpty()) {
+                        Text(note, Modifier.padding(horizontal = 16.dp, vertical = 6.dp),
+                             style = MaterialTheme.typography.bodySmall)
+                    }
+                    when (tab) {
+                        0 -> StatusTab(state, rawStatus)
+                        1 -> BlocksTab(blocks)
+                        else -> ProposalsTab(proposals)
                     }
                 }
             }
-
-            HorizontalDivider()
-            Text("log", style = MaterialTheme.typography.labelMedium)
-            SelectionContainer {
-                Text(log.joinToString("\n"), fontFamily = FontFamily.Monospace,
-                     style = MaterialTheme.typography.bodySmall)
-            }
         }
     }
 
-    private fun logLineAuto(s: String) { android.util.Log.i("NodeRemoteApp", s) }
-
-    /** lgnode://pair?v=1&onion=<addr>&ca=<base32>&t=<tok>&exp=<unix> */
     private fun parse(s: String): Pair<String, String>? = runCatching {
         val u = Uri.parse(s.trim())
         if (u.scheme != "lgnode") return null
         val onion = u.getQueryParameter("onion").orEmpty()
         val ca = u.getQueryParameter("ca").orEmpty()
-        if (onion.isEmpty() || ca.isEmpty()) return null
-        onion to ca
+        if (onion.isEmpty() || ca.isEmpty()) null else onion to ca
     }.getOrNull()
 
-    private fun pretty(s: String): String = runCatching {
-        val o = JSONObject(s)
-        buildString {
-            for (k in listOf("status", "state", "phase", "height", "slot",
-                             "peers", "connections", "reachable", "apiBase")) {
-                if (o.has(k)) append(k).append(": ").append(o.get(k)).append('\n')
-            }
-        }.ifBlank { s }
-    }.getOrDefault(s)
+    private companion object { const val TAG = "NodeRemoteApp" }
 }
