@@ -34,6 +34,8 @@ public:
     using Handler = std::function<QByteArray()>;
     void setStartHandler(Handler h) { m_start = std::move(h); }
     void setBlocksHandler(Handler h) { m_blocks = std::move(h); }
+    void setWipeHandler(Handler h) { m_wipe = std::move(h); }
+    void setRegenHandler(Handler h) { m_regen = std::move(h); }
     void setProposalsHandler(Handler h) { m_proposals = std::move(h); }
     void setStopHandler(Handler h)  { m_stop  = std::move(h); }
 
@@ -42,6 +44,8 @@ private:
 
     Handler m_start;
     Handler m_blocks;
+    Handler m_wipe;
+    Handler m_regen;
     Handler m_proposals;
     Handler m_stop;
 

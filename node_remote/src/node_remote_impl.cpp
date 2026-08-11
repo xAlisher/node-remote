@@ -12,6 +12,8 @@
 #include "logos_sdk.h"
 
 #include <QDateTime>
+#include <QDir>
+#include <QFile>
 #include <QFileInfo>
 #include <QJsonArray>
 #include <QJsonDocument>
@@ -48,6 +50,12 @@ NodeRemoteImpl::NodeRemoteImpl()
     });
     m_http->setStopHandler([this] {
         return QByteArray::fromStdString(stopNode());
+    });
+    m_http->setWipeHandler([this] {
+        return QByteArray::fromStdString(wipeDatabase());
+    });
+    m_http->setRegenHandler([this] {
+        return QByteArray::fromStdString(regenerateConfig(""));
     });
     m_http->setBlocksHandler([this] {
         return QByteArray::fromStdString(getBlocks());
@@ -164,6 +172,87 @@ void NodeRemoteImpl::onContextReady()
         const QString ts = QDateTime::currentDateTimeUtc().toString(Qt::ISODate);
         m_blocks->append(ts, QString::fromStdString(blockJson));
     });
+}
+
+std::string NodeRemoteImpl::wipeDatabase()
+{
+    QJsonObject r;
+    // Lifted from logos_node_1click_backend::resetChainState(). Two properties are
+    // deliberately preserved:
+    //  1. It REFUSES while the node is running. Wiping a live database corrupts it.
+    //  2. It removes ONLY db/state/logs — keystore.yaml and user_config.yaml stay, so
+    //     the wallet keys and settings survive. The docs tell operators to delete the
+    //     whole module_data dir, which loses their keys.
+    const QByteArray statusRaw = g_probe->statusJson();
+    const QJsonObject st = QJsonDocument::fromJson(statusRaw).object();
+    if (st.value("reachable").toBool()) {
+        r["ok"] = false;
+        r["error"] = "Stop the node before wiping the database.";
+        return dump(r);
+    }
+
+    const QString cfg = g_probe->userConfigPath();
+    if (cfg.isEmpty()) {
+        r["ok"] = false;
+        r["error"] = "No config found — nothing to wipe.";
+        return dump(r);
+    }
+
+    const QDir dir = QFileInfo(cfg).absoluteDir();
+    QStringList removed, failed;
+    for (const QString& sub : {QStringLiteral("db"), QStringLiteral("state"),
+                               QStringLiteral("logs")}) {
+        QDir t(dir.filePath(sub));
+        if (!t.exists()) continue;
+        if (t.removeRecursively()) removed << sub; else failed << sub;
+    }
+    if (!failed.isEmpty()) {
+        r["ok"] = false;
+        r["error"] = QStringLiteral("Could not remove: %1").arg(failed.join(", "));
+        return dump(r);
+    }
+    r["ok"] = true;
+    r["removed"] = removed.join(", ");
+    return dump(r);
+}
+
+std::string NodeRemoteImpl::regenerateConfig(const std::string& initialPeers)
+{
+    QJsonObject r;
+    if (!isContextReady()) { r["ok"] = false; r["error"] = "module not ready"; return dump(r); }
+
+    const QString cfg = g_probe->userConfigPath();
+    if (cfg.isEmpty()) {
+        r["ok"] = false;
+        r["error"] = "No existing config to regenerate from.";
+        return dump(r);
+    }
+
+    // generate_user_config only inserts the keys it is GIVEN — anything omitted reverts to
+    // module defaults. So we pass the existing output path and let the module keep its own
+    // defaults for everything we are not deliberately changing, and we BACK UP first,
+    // because user_config.yaml carries consensus.wallet.funding_pk (the leader identity).
+    const QString backup = cfg + ".bak-" +
+        QString::number(QDateTime::currentSecsSinceEpoch());
+    if (!QFile::copy(cfg, backup)) {
+        r["ok"] = false;
+        r["error"] = "Could not back up the current config — refusing to regenerate.";
+        return dump(r);
+    }
+
+    QJsonObject args;
+    args["output_path"] = cfg;
+    args["use_persistence_paths"] = true;
+    if (!initialPeers.empty())
+        args["initial_peers"] = QString::fromStdString(initialPeers);
+
+    const StdLogosResult res = modules().blockchain_module.generate_user_config(
+        QString::fromUtf8(QJsonDocument(args).toJson(QJsonDocument::Compact)).toStdString());
+
+    r["ok"] = res.success;
+    r["backup"] = backup;
+    if (!res.success) r["error"] = QString::fromStdString(res.error);
+    return dump(r);
 }
 
 std::string NodeRemoteImpl::getBlocks()

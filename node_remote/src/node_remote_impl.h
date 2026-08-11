@@ -53,6 +53,15 @@ public:
     /// Stop the blockchain node. Returns {"ok":bool,"error":"..."}.
     std::string stopNode();
 
+    /// Wipe the chain database + consensus state. Refuses while the node is running.
+    /// KEEPS keystore.yaml and user_config.yaml — the wallet keys and settings survive;
+    /// only db/, state/ and logs/ go. The node re-runs IBD from genesis on next start.
+    std::string wipeDatabase();
+
+    /// Regenerate user_config.yaml. `initialPeers` is a comma-separated list; empty keeps
+    /// whatever the current config has.
+    std::string regenerateConfig(const std::string& initialPeers);
+
     /// Blocks seen since load, newest first. Same 14 fields as logos_node_1click's
     /// BlockModel so the phone and the desktop tab agree.
     /// No limit argument: the universal codegen has no LIDL mapping for `int`, and the

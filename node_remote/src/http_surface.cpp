@@ -65,6 +65,15 @@ quint16 HttpSurface::listen()
                     [this, control](const QHttpServerRequest& req) {
                         return control(m_start, req);
                     });
+    // Destructive: POST only, and the module itself refuses while the node runs.
+    m_server->route("/v1/wipe", QHttpServerRequest::Method::Post,
+                    [this, control](const QHttpServerRequest& req) {
+                        return control(m_wipe, req);
+                    });
+    m_server->route("/v1/regenerate", QHttpServerRequest::Method::Post,
+                    [this, control](const QHttpServerRequest& req) {
+                        return control(m_regen, req);
+                    });
     m_server->route("/v1/stop", QHttpServerRequest::Method::Post,
                     [this, control](const QHttpServerRequest& req) {
                         return control(m_stop, req);
