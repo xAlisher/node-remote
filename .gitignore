@@ -1,0 +1,18 @@
+# Android
+android/build/
+node-remote-android/build/
+node-remote-android/.gradle/
+node-remote-android/app/build/
+node-remote-android/local.properties
+*.apk
+*.aab
+
+# Signing material — NEVER commit. See docs/SIGNING.md.
+*.keystore
+*.jks
+keystore.properties
+
+# Nix / build
+result
+result-*
+node-remote-bc/*/result
