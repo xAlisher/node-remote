@@ -23,7 +23,9 @@ Item {
     readonly property color border:    "#434343"   // gray300
     readonly property color textCol:   "#FFFFFF"
     readonly property color textDim:   "#A4A4A4"   // gray400
-    readonly property color accent:    "#ED7B58"   // orange300 / primary
+    readonly property color accent:    "#ED7B58"   // orange300 / primary — tabs, links, highlights
+    readonly property color cta:       "#F55702"   // orange500 / primaryHover — the same CTA
+                                                   // orange 1-click uses, with WHITE copy
     readonly property color success:   "#49F563"   // green500
     readonly property color danger:    "#FB3748"   // red500
 
@@ -202,35 +204,16 @@ Item {
                         color: root.textCol; font.pixelSize: 15; font.bold: true
                     }
 
-                    // Segmented source picker. Deliberately not two cards: the QR below is
-                    // whichever source is selected, so there is never a choice to get wrong
-                    // once the phone's camera is up.
-                    RowLayout {
-                        spacing: 0
-                        Repeater {
-                            model: ["F-Droid", "GitHub"]
-                            delegate: Button {
-                                id: srcBtn
-                                required property int index
-                                required property string modelData
-                                readonly property bool active: root.sourceTab === index
-                                onClicked: root.sourceTab = index
-                                contentItem: Label {
-                                    text: srcBtn.modelData
-                                    color: srcBtn.active ? root.accent : root.textDim
-                                    font.pixelSize: 12
-                                    font.bold: srcBtn.active
-                                    horizontalAlignment: Text.AlignHCenter
-                                    verticalAlignment: Text.AlignVCenter
-                                }
-                                background: Rectangle {
-                                    implicitWidth: 92; implicitHeight: 30
-                                    color: srcBtn.active ? root.surface2 : "transparent"
-                                    radius: 6
-                                    border.color: srcBtn.active ? root.accent : "transparent"
-                                }
-                            }
-                        }
+                    // Logos tabs — label + sliding underline, no button chrome. Matches
+                    // the design system's LogosTabBar, which is what the 1-click node view
+                    // uses for Node / Operations / Explorer.
+                    LogosTabs {
+                        Layout.fillWidth: true
+                        labels: ["F-Droid", "GitHub"]
+                        currentIndex: root.sourceTab
+                        onCurrentIndexChanged: root.sourceTab = currentIndex
+                        activeColor: root.accent
+                        inactiveColor: root.textDim
                     }
 
                     Label {
@@ -355,14 +338,14 @@ Item {
                         // The onion is already up on a retry; only the code needs reminting.
                         onClicked: root.ready ? root.beginPairing() : root.startRemote()
                         contentItem: Label {
-                            text: parent.text; color: "#171717"
+                            text: parent.text; color: "#FFFFFF"
                             font.pixelSize: 13; font.bold: true
                             horizontalAlignment: Text.AlignHCenter
                             verticalAlignment: Text.AlignVCenter
                         }
                         background: Rectangle {
                             implicitWidth: 120; implicitHeight: 36
-                            color: root.accent; radius: 8
+                            color: root.cta; radius: 8
                         }
                     }
 
