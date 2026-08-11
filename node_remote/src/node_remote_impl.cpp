@@ -1,0 +1,117 @@
+#include "node_remote_impl.h"
+
+#include "http_surface.h"
+#include "node_probe.h"
+#include "onion_service.h"
+
+#include <QJsonArray>
+#include <QJsonDocument>
+#include <QJsonObject>
+
+namespace {
+std::string dump(const QJsonObject& o)
+{
+    return QJsonDocument(o).toJson(QJsonDocument::Compact).toStdString();
+}
+}  // namespace
+
+// The probe is owned here and outlives both the HTTP surface and the onion.
+static NodeProbe* g_probe = nullptr;
+
+NodeRemoteImpl::NodeRemoteImpl()
+{
+    if (!g_probe) g_probe = new NodeProbe();
+    m_onion = new OnionService();
+    m_http  = new HttpSurface(g_probe);
+
+    QObject::connect(m_onion, &OnionService::ready, m_onion, [this](const QString& a) {
+        onionReady(a.toStdString());
+    });
+    QObject::connect(m_onion, &OnionService::failed, m_onion, [this](const QString& c) {
+        onionFailed(c.toStdString());
+    });
+}
+
+NodeRemoteImpl::~NodeRemoteImpl()
+{
+    if (m_onion) { m_onion->stop(); delete m_onion; m_onion = nullptr; }
+    if (m_http)  { m_http->stop();  delete m_http;  m_http  = nullptr; }
+}
+
+std::string NodeRemoteImpl::startRemote()
+{
+    QJsonObject r;
+    m_port = m_http->listen();
+    if (m_port == 0) {
+        r["ok"] = false;
+        r["error"] = "http_bind_failed";
+        return dump(r);
+    }
+    const QString err = m_onion->start(m_port);
+    if (!err.isEmpty()) {
+        m_http->stop();
+        m_port = 0;
+        r["ok"] = false;
+        r["error"] = err;
+        return dump(r);
+    }
+    r["ok"] = true;
+    r["port"] = m_port;
+    // Deliberately no onion here — the descriptor is not published yet. Handing out a
+    // pairing QR now would burn its validity window waiting for the upload.
+    r["note"] = "onion publishing; poll getRemoteInfo() until ready";
+    return dump(r);
+}
+
+std::string NodeRemoteImpl::stopRemote()
+{
+    m_onion->stop();
+    m_http->stop();
+    m_port = 0;
+    QJsonObject r;
+    r["ok"] = true;
+    return dump(r);
+}
+
+std::string NodeRemoteImpl::getRemoteInfo()
+{
+    QJsonObject r;
+    r["running"] = m_port != 0;
+    r["ready"]   = m_onion->isReady();
+    r["onion"]   = m_onion->onion();
+    r["port"]    = static_cast<int>(m_port);
+    r["error"]   = m_onion->lastError();
+    QJsonArray cl;
+    for (const QString& c : m_onion->authorizedClients()) cl.append(c);
+    r["clients"] = cl;
+    return dump(r);
+}
+
+std::string NodeRemoteImpl::getNodeStatus()
+{
+    return g_probe->statusJson().toStdString();
+}
+
+std::string NodeRemoteImpl::authorizeClient(const std::string& name,
+                                            const std::string& x25519PubBase32)
+{
+    QJsonObject r;
+    r["ok"] = m_onion->authorizeClient(QString::fromStdString(name),
+                                       QString::fromStdString(x25519PubBase32));
+    return dump(r);
+}
+
+std::string NodeRemoteImpl::revokeClient(const std::string& name)
+{
+    QJsonObject r;
+    r["ok"] = m_onion->revokeClient(QString::fromStdString(name));
+    return dump(r);
+}
+
+std::string NodeRemoteImpl::regenerateOnion()
+{
+    m_onion->regenerateAddress();
+    QJsonObject r;
+    r["ok"] = true;
+    return dump(r);
+}

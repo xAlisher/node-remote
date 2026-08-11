@@ -1,0 +1,27 @@
+{
+  "name": "node_remote",
+  "display_name": "Node Remote",
+  "version": "0.1.0",
+  "type": "core",
+  "interface": "universal",
+  "category": "blockchain",
+  "description": "Remote command surface for the Logos blockchain node, served over a Tor v3 onion service with client authorization.",
+  "main": "node_remote_plugin",
+
+  "//dependencies": "INTENTIONALLY EMPTY. blockchain_module does NOT ship a generated SDK header (verified: no blockchain_module_api.h anywhere in /nix/store, while delivery/storage/chat/capability/radio all do). Listing it here makes logos-cpp-generator emit `#include \"blockchain_module_api.h\"` into logos_sdk.h and the build dies with a fatal error that points at logos_sdk.h rather than at this file. See skill metadata-json-deps-sdk-codegen. Node state is read from the node's own REST API instead — which is what logos-blockchain-ui and logos-node-basecamp/NodePlugin both actually do. Start/stop (E2) needs blockchain_module.start/stop via untyped invokeRemoteMethod, not a typed dep.",
+  "dependencies": [],
+
+  "nix": {
+    "packages": {
+      "build": ["pkg-config"],
+      "runtime": ["qt6.qthttpserver", "tor"]
+    },
+    "external_libraries": [],
+    "cmake": {
+      "find_packages": ["Qt6 REQUIRED COMPONENTS Core Network HttpServer"],
+      "extra_sources": [],
+      "extra_include_dirs": [],
+      "extra_link_libraries": ["Qt6::Core", "Qt6::Network", "Qt6::HttpServer"]
+    }
+  }
+}
