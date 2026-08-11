@@ -2,6 +2,9 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
     <uses-permission android:name="android.permission.INTERNET"/>
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE"/>
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS"/>
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE"/>
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC"/>
     <application
         android:label="Node Remote"
         android:icon="@android:drawable/ic_menu_manage"
@@ -15,5 +18,10 @@
                 <category android:name="android.intent.category.LAUNCHER"/>
             </intent-filter>
         </activity>
+        <!-- dataSync: we poll a remote endpoint. Declaring the wrong type gets the
+             service killed on API 34+ with a ForegroundServiceTypeException. -->
+        <service android:name=".MonitorService"
+                 android:exported="false"
+                 android:foregroundServiceType="dataSync"/>
     </application>
 </manifest>

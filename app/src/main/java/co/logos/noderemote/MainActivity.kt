@@ -39,6 +39,21 @@ class MainActivity : ComponentActivity() {
         val preUri = intent?.getStringExtra("uri").orEmpty()
         val preTok = intent?.getStringExtra("token").orEmpty()
         val auto   = intent?.getBooleanExtra("auto", false) ?: false
+        // adb cannot call am start-foreground-service on our behalf ("Requires permission
+        // not exported from uid"), so the ACTIVITY starts the monitor instead.
+        if (intent?.getBooleanExtra("monitor", false) == true && preUri.isNotEmpty()) {
+            val period = intent?.getIntExtra("periodSec", 15) ?: 15
+            MonitorService.start(this, preUri, preTok, period)
+        }
+        if (intent?.getBooleanExtra("stopMonitor", false) == true) MonitorService.stop(this)
+        // Test/ops hook: flip a notification toggle without a settings screen.
+        //   --es enableEvent n_link   /  --es disableEvent n_link
+        intent?.getStringExtra("enableEvent")?.let { k ->
+            Event.entries.find { it.key == k }?.let { Settings(this).setEnabled(it, true) }
+        }
+        intent?.getStringExtra("disableEvent")?.let { k ->
+            Event.entries.find { it.key == k }?.let { Settings(this).setEnabled(it, false) }
+        }
         setContent { MaterialTheme { Screen(preUri, preTok, auto) } }
     }
 
