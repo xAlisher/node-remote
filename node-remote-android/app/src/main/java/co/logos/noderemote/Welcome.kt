@@ -30,7 +30,10 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 
-const val REPO_URL = "https://github.com/xAlisher/node-remote-android"
+// The monorepo — the Android app and the Basecamp modules live together.
+// This pointed at xAlisher/node-remote-android, which was never created: the
+// GitHub icon in the welcome screen opened a 404.
+const val REPO_URL = "https://github.com/xAlisher/node-remote"
 const val X_URL = "https://x.com/alisher"
 
 /**
