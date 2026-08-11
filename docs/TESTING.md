@@ -17,16 +17,23 @@ separate machine — not inferred from a build succeeding.
   node's own REST API and matching the desktop's 1-click module field for field.
 - **QR encoding.** A full 192-character pairing URI encodes to a 57×57 matrix that an
   independent decoder (zbar) reads back byte-identical.
-- **Signing gate.** `assembleRelease -PassertReleaseSigned` fails and produces no APK when
-  the production keystore is absent.
+- **Signing gate, both directions.** Without the keystore, `assembleRelease
+  -PassertReleaseSigned` fails and produces no APK. With it, the release APK is signed
+  `CN=Node Remote` / `6d80db34…51ae74` — confirmed with apksigner against the pinned digest,
+  after the same build had once come out signed `CN=Peers`.
+- **Blocks.** The `onNewBlock` subscription delivers; `/v1/blocks` returned 100 blocks with
+  the full field set (blockRoot, entropy, leaderKey, parentBlock…) against a live node.
 
 ## Not proven
 
 Say so rather than implying coverage:
 
-- **Balance and Blocks** need `node_remote` running inside Basecamp *beside* the node — the
-  wallet RPCs and `newBlock` are instance-bound and only answer in the `blockchain_module`
-  that is actually running the node. They cannot be exercised in a headless harness.
+- **Balance.** The merging code was never wired to `/v1/status` (fixed, not yet observed
+  working). It needs `node_remote` running inside Basecamp *beside* the node: the wallet
+  RPCs are instance-bound and only answer in the `blockchain_module` that is actually
+  running the node, so this cannot be exercised in a headless harness.
+- **Blend `Inactive`.** The Bootstrapping case now reports Inactive rather than Unknown,
+  following 1-click. Deployed, not yet seen on screen.
 - **Three notification events** — Bootstrapping, Balance changed, Block proposed — are wired
   but have never fired live.
 - **The honest-error table** is a faithful port of `logos_node_1click`'s mapping but has not
