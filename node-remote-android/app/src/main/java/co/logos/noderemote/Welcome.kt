@@ -58,6 +58,10 @@ fun WelcomeScreen(
                 .padding(horizontal = 24.dp, vertical = 32.dp),
             verticalArrangement = Arrangement.spacedBy(14.dp),
         ) {
+            // The product mark, above the name — same glyph as the launcher and the
+            // Basecamp pane, so the three read as one thing.
+            LucideGlyph(Ic.BLOCKS, LogosColors.white, 44.dp)
+
             Text("Node Remote", fontWeight = FontWeight.Bold, fontSize = 30.sp,
                  color = LogosColors.white)
 
@@ -214,6 +218,13 @@ private object Ic {
                       "M9 2h6a1 1 0 0 1 1 1v2a1 1 0 0 1-1 1H9a1 1 0 0 1-1-1V3a1 1 0 0 1 1-1z"
     // lucide `x`
     const val CLOSE = "M18 6 6 18M6 6l12 12"
+
+    // lucide `blocks` — the product mark, the same glyph as the launcher icon and the
+    // Basecamp module icon. Rendered from the path rather than the mipmap so it scales
+    // cleanly and is tintable; the <rect x=14 y=2 w=8 h=8 rx=1> is written out longhand
+    // because PathParser has no <rect>.
+    const val BLOCKS = "M10 22V7a1 1 0 0 0-1-1H4a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-5a1 1 0 0 0-1-1H2 " +
+                       "M15 2h6a1 1 0 0 1 1 1v6a1 1 0 0 1-1 1h-6a1 1 0 0 1-1-1V3a1 1 0 0 1 1-1z"
 }
 
 /**
