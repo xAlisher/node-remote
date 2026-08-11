@@ -110,6 +110,11 @@ QByteArray NodeProbe::get(const QString& url, int timeoutMs, bool* ok)
     return body;
 }
 
+// Marks a lastNodeError() result that describes a node WORKING, not failing. Kept as a
+// sentinel rather than a second function so the single newest-first log scan still decides
+// — two scans could disagree about which line is most recent.
+static const QString kNoticePrefix = QStringLiteral("NOTICE:");
+
 QString NodeProbe::lastNodeError() const
 {
     // Ported from logos_node_1click_backend.cpp:36-120. The value of this table is that
@@ -137,9 +142,13 @@ QString NodeProbe::lastNodeError() const
     for (int i = lines.size() - 1; i >= 0; --i) {
         const QString& ln = lines.at(i);
 
-        // NOT an error — the node is replaying stored blocks.
+        // NOT an error — the node is replaying stored blocks. Prefixed so the caller can
+        // tell it apart from the failures below without re-matching the log itself. It was
+        // returned as a plain string like every other entry, so the phone rendered a healthy
+        // recovering node in a red error card AND offered "Start node" for a node that was
+        // already running.
         if (has(ln, "blocks to replay") || has(ln, "Chain recovery") || has(ln, "recovering chain state"))
-            return QStringLiteral("The node is replaying stored blocks to catch up — this can take a few minutes.");
+            return kNoticePrefix + QStringLiteral("The node is replaying stored blocks to catch up — this can take a few minutes.");
 
         if (has(ln, "crashed (signal") || has(ln, "panicked") || has(ln, "SIGABRT") || has(ln, "SIGSEGV"))
             return QStringLiteral("The node process crashed. Wipe the database and start over to recover.");
@@ -187,7 +196,15 @@ QByteArray NodeProbe::statusJson()
         // node is a normal state, so only attach an error when the log actually explains
         // a failure — otherwise the phone shows "Not Started", which is the truth.
         const QString honest = lastNodeError();
-        if (!honest.isEmpty()) out["error"] = honest;
+        if (honest.startsWith(kNoticePrefix)) {
+            // The node is up and busy recovering. Report it as Starting — the same status
+            // 1-click uses mid-transition, where it DISABLES the node control rather than
+            // offering to start what is already started.
+            out["status"] = "Starting";
+            out["notice"] = honest.mid(kNoticePrefix.size());
+        } else if (!honest.isEmpty()) {
+            out["error"] = honest;
+        }
         return QJsonDocument(out).toJson(QJsonDocument::Compact);
     }
 

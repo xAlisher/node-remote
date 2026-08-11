@@ -101,6 +101,13 @@ fun StatusTab(s: NodeState, raw: String, note: String = "",
         if (shown != null) ErrorCard(shown, control)
         else NodeStateBlock(s, control)
 
+        // A working-but-busy node explains itself in plain text under the state, not in the
+        // red card. Red is for things you must act on.
+        s.notice.takeIf { it.isNotEmpty() && s.answered }?.let {
+            Text(it, style = MaterialTheme.typography.bodySmall,
+                 color = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
+
         run {
             // Formatted from balanceRaw (BASE UNITS) with 1-click's own algorithm, so the
             // two surfaces print the same string for the same wallet — "200M LGO", not
@@ -238,6 +245,8 @@ private fun NodeStateBlock(s: NodeState, control: @Composable () -> Unit = {}) {
         // as "no reply yet" hides a fixable problem behind an infinite wait.
         s.isRejected() -> "Not authorised — pair again" to LogosColors.red500
         !s.answered -> "Waiting for data…" to LogosColors.gray400
+        // Alive but replaying. Orange like Bootstrapping — busy, not broken.
+        s.isStarting() -> "Starting" to LogosColors.orange300
         err != null -> "Error" to LogosColors.red500
         !s.reachable -> "Unknown" to LogosColors.gray400
         s.state.equals("Online", true) -> "Online" to LogosColors.green500

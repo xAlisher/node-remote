@@ -21,6 +21,12 @@ data class NodeState(
     val slot: Long = -1,
     val peers: Int = -1,
     val error: String = "",
+    /**
+     * A node that is WORKING but busy — currently only "replaying stored blocks".
+     * Deliberately separate from [error]: it is not a failure, it must not render red, and
+     * it means the node is ALIVE, so offering "Start node" would be wrong.
+     */
+    val notice: String = "",
     val atMillis: Long = 0,
 ) {
     companion object {
@@ -36,6 +42,7 @@ data class NodeState(
                 slot = o.optLong("slot", -1),
                 peers = o.optInt("peers", -1),
                 error = o.optString("error"),
+                notice = o.optString("notice"),
                 atMillis = now,
             )
         }.getOrElse { NodeState(answered = true, error = "unparseable", atMillis = now) }
@@ -51,6 +58,13 @@ data class NodeState(
  * and it must never render as "Waiting for data…" — during the token bug the app sat on
  * that spinner indefinitely while every poll was being told 401.
  */
+/**
+ * The node is up and busy coming back (replaying blocks). The API is not answering yet, so
+ * `reachable` is false — but the process is alive and start/stop must be disabled, not
+ * offered. Mirrors 1-click, which treats Starting/Stopping as busy and disables its control.
+ */
+fun NodeState.isStarting() = status == "Starting"
+
 fun NodeState.isRejected() = !answered && error.startsWith("HTTP 4")
 
 /**

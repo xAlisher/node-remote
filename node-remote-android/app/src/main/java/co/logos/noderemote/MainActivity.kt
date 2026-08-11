@@ -441,7 +441,13 @@ class MainActivity : ComponentActivity() {
                                 CircularProgressIndicator(Modifier.size(18.dp),
                                     strokeWidth = 2.dp, color = LogosColors.orange300)
                             } else {
-                                val on = !busy && state.reachable
+                                // A node replaying stored blocks is ALIVE — its API just is
+                                // not answering yet. The button was already disabled here
+                                // (reachable is false), but it still READ "Start node",
+                                // which tells you the node is down when it is working. Show
+                                // the truth instead: it is starting.
+                                val starting = state.isStarting()
+                                val on = !busy && !starting && state.reachable
                                 val tint = (if (running) LogosColors.white else LogosColors.green500)
                                     .copy(alpha = if (on) 1f else 0.38f)
                                 TextButton(
@@ -449,9 +455,14 @@ class MainActivity : ComponentActivity() {
                                     onClick = { confirm = if (running) "stop" else "start" },
                                     contentPadding = PaddingValues(horizontal = 8.dp, vertical = 0.dp),
                                 ) {
-                                    if (busy) {
+                                    if (busy || starting) {
                                         CircularProgressIndicator(Modifier.size(16.dp),
-                                            strokeWidth = 2.dp, color = tint)
+                                            strokeWidth = 2.dp, color = LogosColors.orange300)
+                                        if (starting) {
+                                            Spacer(Modifier.width(8.dp))
+                                            Text("Starting", color = LogosColors.orange300,
+                                                 fontWeight = FontWeight.Medium, fontSize = 14.sp)
+                                        }
                                     } else {
                                         if (running) StopGlyph(tint) else PlayGlyph(tint)
                                         Spacer(Modifier.width(8.dp))
