@@ -19,6 +19,7 @@
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QStandardPaths>
 
 namespace {
 std::string dump(const QJsonObject& o)
@@ -36,6 +37,12 @@ NodeRemoteImpl::NodeRemoteImpl()
     m_onion = new OnionService();
     m_blocks = new BlockStore();
     m_http  = new HttpSurface(g_probe);
+
+    // A paired phone keeps its token across desktop restarts, so we must too. HttpSurface
+    // itself only reads NODE_REMOTE_TOKEN (the headless-test path), which Basecamp does
+    // not set.
+    const std::string saved = loadToken();
+    if (!saved.empty()) m_http->setToken(QString::fromStdString(saved));
 
     QObject::connect(m_onion, &OnionService::ready, m_onion, [this](const QString& a) {
         onionReady(a.toStdString());
@@ -338,6 +345,14 @@ std::string NodeRemoteImpl::beginPairing(const std::string& label)
     const QString onion = m_onion->onion();
     const qint64 exp = QDateTime::currentSecsSinceEpoch() + 120;
 
+    // Install it on the surface it is meant to open. Without this line the QR handed the
+    // phone a bearer token the desktop had never heard of: /v1/ping is unauthenticated so
+    // the app reported "connected", while every data route returned 401 and the screen sat
+    // on "Waiting for data" forever. Also persisted, or a Basecamp restart would silently
+    // 401 an already-paired phone with no way for either end to explain why.
+    m_http->setToken(token);
+    persistToken(token.toStdString());
+
     r["ok"] = true;
     r["uri"] = QStringLiteral("lgnode://pair?v=1&onion=%1&ca=%2&t=%3&exp=%4")
                    .arg(onion, kp.privBase32, token).arg(exp);
@@ -350,6 +365,33 @@ std::string NodeRemoteImpl::beginPairing(const std::string& label)
     r["label"] = name;
     // The private key is IN the uri by necessity (see pairing.h); do not log the uri.
     return dump(r);
+}
+
+std::string NodeRemoteImpl::tokenPath() const
+{
+    return (QStandardPaths::writableLocation(QStandardPaths::AppDataLocation)
+            + "/node_remote/device_token").toStdString();
+}
+
+void NodeRemoteImpl::persistToken(const std::string& token) const
+{
+    const QString path = QString::fromStdString(tokenPath());
+    QDir().mkpath(QFileInfo(path).absolutePath());
+    QFile f(path);
+    if (!f.open(QIODevice::WriteOnly | QIODevice::Truncate)) return;
+    // Owner-only: this is a bearer credential for the node's control surface.
+    f.setPermissions(QFileDevice::ReadOwner | QFileDevice::WriteOwner);
+    f.write(QByteArray::fromStdString(token));
+    f.close();
+}
+
+std::string NodeRemoteImpl::loadToken() const
+{
+    QFile f(QString::fromStdString(tokenPath()));
+    if (!f.open(QIODevice::ReadOnly)) return std::string();
+    const QString t = QString::fromUtf8(f.readAll()).trimmed();
+    f.close();
+    return t.toStdString();
 }
 
 std::string NodeRemoteImpl::generateQr(const std::string& payload)

@@ -114,6 +114,14 @@ logos_events:
     void onionFailed(const std::string& code);
 
 private:
+    // The bearer token minted at pairing time, kept across restarts so an already-paired
+    // phone does not start silently 401ing after Basecamp is restarted.
+    // std::string, not QString: this header is Qt-free by design — the universal codegen
+    // parses it, and it declares only forward-declared classes and <string>.
+    std::string tokenPath() const;
+    void        persistToken(const std::string& token) const;
+    std::string loadToken() const;
+
     OnionService* m_onion = nullptr;
     BlockStore*   m_blocks = nullptr;
     HttpSurface*  m_http  = nullptr;
