@@ -13,9 +13,13 @@ deserves to know what changed.
 
 ## What is on the wire
 
-Your node's Basecamp module serves a small JSON API on **loopback only** — it never binds a
-public interface. A Tor v3 onion service publishes that loopback port, with **client
-authorization** (also called restricted discovery) enabled.
+The **Node Remote app in Basecamp** — not the blockchain node — serves a small JSON API on
+**loopback only**; it never binds a public interface. It reads the node's own REST API over
+loopback and re-serves what it finds. A Tor v3 onion service publishes that loopback port,
+with **client authorization** (also called restricted discovery) enabled.
+
+The blockchain node is not involved in any of this and publishes nothing. It does not know
+Tor exists.
 
 The phone runs its own embedded Tor (kmp-tor, no Orbot, no Google Play Services), holds the
 X25519 client-auth private key from the pairing QR, and reaches the onion over a Tor

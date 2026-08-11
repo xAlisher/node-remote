@@ -70,9 +70,13 @@ fun WelcomeScreen(
                  color = LogosColors.white)
 
             Text(
-                "Your node publishes a Tor onion service that only paired devices can " +
-                "reach. Anyone who learns the address can tell the service exists, but " +
-                "still can't connect without the key you scan below.",
+                // NOT "your node publishes" — the blockchain node knows nothing about Tor
+                // and publishes nothing. The Node Remote app in Basecamp runs the onion
+                // service and reads the node over loopback. Naming the wrong component
+                // sends anyone debugging this to the wrong logs.
+                "The Node Remote app in Basecamp publishes a Tor onion service that only " +
+                "paired devices can reach. Anyone who learns the address can tell the " +
+                "service exists, but still can't connect without the key you scan below.",
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
