@@ -4,6 +4,7 @@
 #include "logos_module_context.h"
 
 class OnionService;
+class BlockStore;
 class HttpSurface;
 
 /**
@@ -52,6 +53,16 @@ public:
     /// Stop the blockchain node. Returns {"ok":bool,"error":"..."}.
     std::string stopNode();
 
+    /// Blocks seen since load, newest first. Same 14 fields as logos_node_1click's
+    /// BlockModel so the phone and the desktop tab agree.
+    /// No limit argument: the universal codegen has no LIDL mapping for `int`, and the
+    /// store is already capped at 100 (BlockModel::kMaxBlocks). Slice client-side.
+    std::string getBlocks();
+
+    /// Blocks THIS node proposed: [{id,txs,removed,time}]. Scraped from the node's logs —
+    /// blockchain_module exposes no proposals API.
+    std::string getProposals();
+
     /// Begin pairing: mint an X25519 client-auth keypair, pre-authorize it, and mint a
     /// one-time enrollment token. Returns {uri, sas, expiresAt, deviceKey}.
     /// The `uri` is what the QR encodes. Do NOT display it before the onion is ready —
@@ -70,6 +81,12 @@ public:
     /// Mint a fresh .onion (wipes the persistent HS key material).
     std::string regenerateOnion();
 
+protected:
+    /// Framework hook — modules() is only valid from here on. Subscribing to
+    /// blockchain_module's newBlock from the constructor would dereference a null
+    /// LogosModules pointer.
+    void onContextReady() override;
+
 logos_events:
     /// Emitted once the onion descriptor is published and the service is reachable.
     void onionReady(const std::string& onion);
@@ -78,6 +95,7 @@ logos_events:
 
 private:
     OnionService* m_onion = nullptr;
+    BlockStore*   m_blocks = nullptr;
     HttpSurface*  m_http  = nullptr;
     unsigned short m_port = 0;
 };

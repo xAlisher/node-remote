@@ -10,6 +10,7 @@ set(NODE_REMOTE_SOURCES
     src/http_surface.h      src/http_surface.cpp
     src/node_probe.h        src/node_probe.cpp
     src/pairing.h           src/pairing.cpp
+    src/block_store.h       src/block_store.cpp
 )
 
 # NOTE: metadata.json's nix.cmake.find_packages / extra_link_libraries are NOT consumed by

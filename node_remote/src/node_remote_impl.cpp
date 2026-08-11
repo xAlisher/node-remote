@@ -4,6 +4,7 @@
 #include "node_probe.h"
 #include "onion_service.h"
 #include "pairing.h"
+#include "block_store.h"
 
 // The typed wrapper for blockchain_module. Generated at build time from the flake input
 // whose attribute name matches the dependency string EXACTLY (see flake.nix) — there is
@@ -11,6 +12,7 @@
 #include "logos_sdk.h"
 
 #include <QDateTime>
+#include <QFileInfo>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
@@ -29,6 +31,7 @@ NodeRemoteImpl::NodeRemoteImpl()
 {
     if (!g_probe) g_probe = new NodeProbe();
     m_onion = new OnionService();
+    m_blocks = new BlockStore();
     m_http  = new HttpSurface(g_probe);
 
     QObject::connect(m_onion, &OnionService::ready, m_onion, [this](const QString& a) {
@@ -46,12 +49,19 @@ NodeRemoteImpl::NodeRemoteImpl()
     m_http->setStopHandler([this] {
         return QByteArray::fromStdString(stopNode());
     });
+    m_http->setBlocksHandler([this] {
+        return QByteArray::fromStdString(getBlocks());
+    });
+    m_http->setProposalsHandler([this] {
+        return QByteArray::fromStdString(getProposals());
+    });
 }
 
 NodeRemoteImpl::~NodeRemoteImpl()
 {
     if (m_onion) { m_onion->stop(); delete m_onion; m_onion = nullptr; }
     if (m_http)  { m_http->stop();  delete m_http;  m_http  = nullptr; }
+    delete m_blocks; m_blocks = nullptr;
 }
 
 std::string NodeRemoteImpl::startRemote()
@@ -105,7 +115,70 @@ std::string NodeRemoteImpl::getRemoteInfo()
 
 std::string NodeRemoteImpl::getNodeStatus()
 {
-    return g_probe->statusJson().toStdString();
+    QJsonObject o = QJsonDocument::fromJson(g_probe->statusJson()).object();
+
+    // Balance is NOT in the node's REST API — it comes from blockchain_module's wallet
+    // RPCs, so it is merged here rather than in node_probe (which is HTTP-only by design).
+    // Two calls: the known addresses, then the balance of the first (the "primary
+    // address" the desktop dashboard shows).
+    // NOTE: unlike the chain fields (read over the node's own HTTP API, which works no
+    // matter who started the node), the wallet RPCs are INSTANCE-BOUND — they answer only
+    // in the blockchain_module instance that is actually running the node. Under Basecamp
+    // that is the same instance node_remote talks to, so this works. In an isolated
+    // logoscore harness it returns "The node is not running." and balance is unavailable.
+    // Surface that rather than showing a silent dash.
+    if (isContextReady()) {
+        const StdLogosResult addrs = modules().blockchain_module.wallet_get_known_addresses();
+        if (!addrs.success) o["balanceError"] = QString::fromStdString(addrs.error);
+        if (addrs.success) {
+            QString primary;
+            const QJsonDocument ad = QJsonDocument::fromJson(
+                QByteArray::fromStdString(addrs.value.dump()));
+            if (ad.isArray() && !ad.array().isEmpty())
+                primary = ad.array().first().toString();
+            else if (ad.isObject())
+                primary = ad.object().value("address").toString();
+
+            if (!primary.isEmpty()) {
+                o["primaryAddress"] = primary;
+                const StdLogosResult bal =
+                    modules().blockchain_module.wallet_get_balance(primary.toStdString());
+                if (bal.success) {
+                    // Base units -> LGO with the same 10^4 divisor the desktop uses.
+                    const QString raw = QString::fromStdString(bal.value.dump()).remove('"');
+                    bool okNum = false;
+                    const double v = raw.toDouble(&okNum);
+                    o["balanceRaw"] = raw;
+                    if (okNum) o["balance"] = QString::number(v / 10000.0, 'f', 4);
+                }
+            }
+        }
+    }
+    return QJsonDocument(o).toJson(QJsonDocument::Compact).toStdString();
+}
+
+void NodeRemoteImpl::onContextReady()
+{
+    // The ONE push channel blockchain_module offers. Everything else is polled.
+    modules().blockchain_module.onNewBlock([this](const std::string& blockJson) {
+        const QString ts = QDateTime::currentDateTimeUtc().toString(Qt::ISODate);
+        m_blocks->append(ts, QString::fromStdString(blockJson));
+    });
+}
+
+std::string NodeRemoteImpl::getBlocks()
+{
+    return m_blocks->json(0).toStdString();
+}
+
+std::string NodeRemoteImpl::getProposals()
+{
+    // The node writes its logs beside its config, in a `logs` dir — the same place
+    // logos_node_1click's resetChainState() wipes.
+    const QString cfg = g_probe->userConfigPath();
+    const QString dir = cfg.isEmpty() ? QString()
+                                      : QFileInfo(cfg).absolutePath() + QStringLiteral("/logs");
+    return BlockStore::proposalsJson(dir, 200).toStdString();
 }
 
 std::string NodeRemoteImpl::startNode(const std::string& configPath,

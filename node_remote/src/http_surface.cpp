@@ -70,6 +70,23 @@ quint16 HttpSurface::listen()
                         return control(m_stop, req);
                     });
 
+    // Read routes for the Blocks / Proposals tabs. GET is correct here — they are
+    // side-effect free, unlike /v1/start and /v1/stop.
+    auto readRoute = [this](const Handler& h, const QHttpServerRequest& req) {
+        if (!authorized(req))
+            return QHttpServerResponse("application/json",
+                                       QByteArrayLiteral(R"({"error":"unauthorized"})"),
+                                       QHttpServerResponder::StatusCode::Unauthorized);
+        if (!h) return QHttpServerResponse("application/json", QByteArrayLiteral("[]"));
+        return QHttpServerResponse("application/json", h());
+    };
+    m_server->route("/v1/blocks", [this, readRoute](const QHttpServerRequest& r) {
+        return readRoute(m_blocks, r);
+    });
+    m_server->route("/v1/proposals", [this, readRoute](const QHttpServerRequest& r) {
+        return readRoute(m_proposals, r);
+    });
+
     m_tcp = new QTcpServer(this);
     // Loopback ONLY. The onion is the sole external path; binding Any would publish the
     // node's control surface to the LAN.

@@ -33,12 +33,16 @@ public:
     // Each returns the JSON body to send back.
     using Handler = std::function<QByteArray()>;
     void setStartHandler(Handler h) { m_start = std::move(h); }
+    void setBlocksHandler(Handler h) { m_blocks = std::move(h); }
+    void setProposalsHandler(Handler h) { m_proposals = std::move(h); }
     void setStopHandler(Handler h)  { m_stop  = std::move(h); }
 
 private:
     bool authorized(const QHttpServerRequest& req) const;
 
     Handler m_start;
+    Handler m_blocks;
+    Handler m_proposals;
     Handler m_stop;
 
     QHttpServer* m_server = nullptr;
