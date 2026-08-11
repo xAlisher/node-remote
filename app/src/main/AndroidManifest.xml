@@ -20,6 +20,13 @@
                 <category android:name="android.intent.category.LAUNCHER"/>
             </intent-filter>
         </activity>
+        <!-- Portrait is pinned HERE: the library declares its own CaptureActivity as
+             landscape, and that is what made the scanner open sideways. -->
+        <activity android:name=".ScanActivity"
+                  android:exported="false"
+                  android:screenOrientation="portrait"
+                  android:theme="@style/Theme.NodeRemote.Scan"/>
+
         <!-- dataSync: we poll a remote endpoint. Declaring the wrong type gets the
              service killed on API 34+ with a ForegroundServiceTypeException. -->
         <service android:name=".MonitorService"

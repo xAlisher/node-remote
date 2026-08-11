@@ -6,4 +6,10 @@
         <item name="android:statusBarColor">#171717</item>
         <item name="android:navigationBarColor">#171717</item>
     </style>
+    <!-- AppCompat parent: CaptureManager's host must be an AppCompatActivity. -->
+    <style name="Theme.NodeRemote.Scan" parent="Theme.AppCompat.NoActionBar">
+        <item name="android:windowBackground">#171717</item>
+        <item name="android:statusBarColor">#171717</item>
+        <item name="android:navigationBarColor">#171717</item>
+    </style>
 </resources>

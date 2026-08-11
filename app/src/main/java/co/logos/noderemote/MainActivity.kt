@@ -312,9 +312,9 @@ class MainActivity : ComponentActivity() {
                         onScan = {
                             scanner.launch(ScanOptions().apply {
                                 setDesiredBarcodeFormats(ScanOptions.QR_CODE)
-                                setPrompt("Scan the code shown in Basecamp")
                                 setBeepEnabled(false)
                                 setOrientationLocked(false)
+                                setCaptureActivity(ScanActivity::class.java)
                             })
                         },
                         onEnterUri = { showEnterUri = true },

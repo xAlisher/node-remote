@@ -61,4 +61,5 @@ dependencies {
     // ML Kit ships proprietary blobs. ZXing also works with no Play Services at all, which
     // matters on GrapheneOS.
     implementation "com.journeyapps:zxing-android-embedded:4.3.0"
+    implementation "androidx.appcompat:appcompat:1.7.0"
 }
