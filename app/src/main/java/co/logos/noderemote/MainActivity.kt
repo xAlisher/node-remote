@@ -204,8 +204,19 @@ class MainActivity : ComponentActivity() {
         // the node's state, and treating it as such made the app show "Start node" —
         // asserting the node was down — before it had connected at all.
         val hasData = state.answered
-        val running = state.reachable && (state.state.equals("Online", true) ||
-                                          state.status == "Running")
+        // reachable IS the answer: node_probe sets it only when the node's own REST API
+        // replied, and a node that answers HTTP is running by definition.
+        //
+        // This used to enumerate the good states — "Online" or status=="Running" — and call
+        // everything else stopped. But node_probe maps status to "Running" ONLY when state
+        // is "Online", so a bootstrapping node reported state=status="Bootstrapping" and the
+        // app offered "Start node" for a node that was already up and syncing. Enumerating
+        // the healthy states means every state the node adds later reads as "stopped".
+        //
+        // It also mis-gated the settings page: Wipe/Regenerate are enabled on !nodeRunning,
+        // so both were offered against a LIVE bootstrapping node. The desktop refuses that
+        // server-side, but the UI should not be offering it.
+        val running = state.reachable
 
         // Destructive-ish and remote: stopping a node from a phone by accident is a bad
         // afternoon, so it goes through a confirm rather than firing on tap.
