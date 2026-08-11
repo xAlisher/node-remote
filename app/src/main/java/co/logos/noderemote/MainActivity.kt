@@ -75,6 +75,7 @@ class MainActivity : ComponentActivity() {
         var busy by remember { mutableStateOf(false) }
         var note by remember { mutableStateOf("") }
         var confirm by remember { mutableStateOf<String?>(null) }   // "start" | "stop" | null
+        var showSettings by remember { mutableStateOf(false) }
         // Whether the user has asked to be connected. Separate from `link`, which is the
         // OBSERVED state — gating the poll loop on `link` let one transient failure set
         // DISCONNECTED and stop the loop forever, with no way back short of a restart.
@@ -181,9 +182,18 @@ class MainActivity : ComponentActivity() {
 
         Scaffold(topBar = {
             TopAppBar(
+                navigationIcon = {
+                    if (showSettings) {
+                        IconButton(onClick = { showSettings = false }) {
+                            ChevronLeftGlyph(LogosColors.white)
+                        }
+                    }
+                },
                 title = {
-                    Column {
-                        Text("Node Remote", fontWeight = FontWeight.Bold)
+                    Column(verticalArrangement = Arrangement.Center) {
+                        Text(if (showSettings) "Settings" else "Node Remote",
+                             fontWeight = FontWeight.Bold)
+                        if (showSettings) return@Column
                         // Secondary line: how the PHONE is doing. Kept separate from the
                         // node's own state pill so it is always clear which one is unhappy.
                         val (txt, col) = when (link) {
@@ -196,36 +206,12 @@ class MainActivity : ComponentActivity() {
                     }
                 },
                 actions = {
-                    if (connected && !hasData) {
-                        // We do not know the node's state yet. Showing "Start node" here
-                        // would assert the node is down, which we have not established.
-                        CircularProgressIndicator(
-                            modifier = Modifier.padding(end = 20.dp).size(20.dp),
-                            strokeWidth = 2.dp,
-                            color = LogosColors.orange300,
-                        )
-                    } else if (connected) {
-                        // Plain icon + label, no chip background — a rare action, not the
-                        // primary one on screen.
-                        TextButton(
-                            enabled = !busy && state.reachable,
-                            onClick = { confirm = if (running) "stop" else "start" },
-                            modifier = Modifier.padding(end = 6.dp),
-                        ) {
-                            // Dim when disabled: an explicit tint otherwise renders a
-                            // dead button in full colour, which invites taps that do nothing.
-                            val on = !busy && state.reachable
-                            val tint = (if (running) LogosColors.white else LogosColors.green500)
-                                .copy(alpha = if (on) 1f else 0.38f)
-                            if (busy) {
-                                CircularProgressIndicator(Modifier.size(16.dp),
-                                                          strokeWidth = 2.dp, color = tint)
-                            } else {
-                                if (running) StopGlyph(tint) else PlayGlyph(tint)
-                                Spacer(Modifier.width(8.dp))
-                                Text(if (running) "Stop node" else "Start node",
-                                     color = tint, fontWeight = FontWeight.Medium, fontSize = 14.sp)
-                            }
+                    // Gear only. The Start/Stop control moved into the Status row, next to
+                    // the state it acts on, instead of sitting beside the app name.
+                    if (connected && !showSettings) {
+                        IconButton(onClick = { showSettings = true },
+                                   modifier = Modifier.padding(end = 6.dp)) {
+                            GearGlyph(LogosColors.white)
                         }
                     }
                 },
@@ -250,17 +236,34 @@ class MainActivity : ComponentActivity() {
                         Button(onClick = { scope.launch { connect() } }) { Text("Connect") }
                         if (note.isNotEmpty()) Text(note, style = MaterialTheme.typography.bodySmall)
                     }
+                } else if (showSettings) {
+                    SettingsPage(
+                        settings = Settings(this@MainActivity),
+                        onChanged = {
+                            // Restart the watcher so a change takes effect now rather than
+                            // at the next app launch.
+                            if (uri.isNotEmpty())
+                                MonitorService.start(this@MainActivity, uri, token, 15)
+                        },
+                        onDisconnect = {
+                            MonitorService.stop(this@MainActivity)
+                            wantConnected = false
+                            link = Link.DISCONNECTED
+                            showSettings = false
+                            uri = ""; token = ""
+                            state = NodeState(); rawStatus = ""
+                            blocks = emptyList(); proposals = emptyList()
+                            note = "Disconnected. Scan a new QR to pair again."
+                        },
+                    )
                 } else {
                     // Active tab in primary orange; the rest plain white.
-                    // ScrollableTabRow: with four tabs a fixed row squeezes "Proposals"
-                    // onto two lines. edgePadding 0 keeps it flush left.
-                    ScrollableTabRow(
+                    TabRow(
                         selectedTabIndex = tab,
                         containerColor = LogosColors.gray900,
                         contentColor = LogosColors.orange300,
-                        edgePadding = 0.dp,
                     ) {
-                        listOf("Status", "Blocks", "Proposals", "Alerts").forEachIndexed { i, t ->
+                        listOf("Status", "Blocks", "Proposals").forEachIndexed { i, t ->
                             Tab(selected = tab == i, onClick = { tab = i },
                                 selectedContentColor = LogosColors.orange300,
                                 unselectedContentColor = LogosColors.white,
@@ -273,15 +276,34 @@ class MainActivity : ComponentActivity() {
                              color = MaterialTheme.colorScheme.onSurfaceVariant)
                     }
                     when (tab) {
-                        0 -> StatusTab(state, rawStatus)
-                        1 -> BlocksTab(blocks)
-                        2 -> ProposalsTab(proposals)
-                        else -> NotificationsTab(Settings(this@MainActivity)) {
-                            // Restart the watcher so a settings change takes effect now
-                            // rather than at the next app launch.
-                            if (uri.isNotEmpty())
-                                MonitorService.start(this@MainActivity, uri, token, 15)
+                        0 -> StatusTab(state, rawStatus) {
+                            if (!hasData) {
+                                CircularProgressIndicator(Modifier.size(18.dp),
+                                    strokeWidth = 2.dp, color = LogosColors.orange300)
+                            } else {
+                                val on = !busy && state.reachable
+                                val tint = (if (running) LogosColors.white else LogosColors.green500)
+                                    .copy(alpha = if (on) 1f else 0.38f)
+                                TextButton(
+                                    enabled = on,
+                                    onClick = { confirm = if (running) "stop" else "start" },
+                                    contentPadding = PaddingValues(horizontal = 8.dp, vertical = 0.dp),
+                                ) {
+                                    if (busy) {
+                                        CircularProgressIndicator(Modifier.size(16.dp),
+                                            strokeWidth = 2.dp, color = tint)
+                                    } else {
+                                        if (running) StopGlyph(tint) else PlayGlyph(tint)
+                                        Spacer(Modifier.width(8.dp))
+                                        Text(if (running) "Stop node" else "Start node",
+                                             color = tint, fontWeight = FontWeight.Medium,
+                                             fontSize = 14.sp)
+                                    }
+                                }
+                            }
                         }
+                        1 -> BlocksTab(blocks)
+                        else -> ProposalsTab(proposals)
                     }
                 }
             }

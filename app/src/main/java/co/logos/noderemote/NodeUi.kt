@@ -1,5 +1,6 @@
 package co.logos.noderemote
 
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
@@ -20,11 +21,14 @@ import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.StrokeJoin
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.drawscope.scale
+import androidx.compose.ui.graphics.vector.PathParser
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import org.json.JSONArray
 import org.json.JSONObject
@@ -77,13 +81,13 @@ data class Proposal(val id: String, val txs: Int, val removed: Int, val time: St
 }
 
 @Composable
-fun StatusTab(s: NodeState, raw: String) {
+fun StatusTab(s: NodeState, raw: String, control: @Composable () -> Unit = {}) {
     val o = remember(raw) { runCatching { JSONObject(raw) }.getOrNull() }
 
     Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(16.dp),
            verticalArrangement = Arrangement.spacedBy(12.dp)) {
 
-        NodeStateBlock(s)
+        NodeStateBlock(s, control)
 
         Row(horizontalArrangement = Arrangement.spacedBy(12.dp), modifier = Modifier.fillMaxWidth()) {
             Tile("Height", if (s.height >= 0) "${s.height}" else "—", Modifier.weight(1f))
@@ -143,7 +147,7 @@ fun StatusTab(s: NodeState, raw: String) {
  * it" — those are different problems and colouring them the same trains you to ignore both.
  */
 @Composable
-private fun NodeStateBlock(s: NodeState) {
+private fun NodeStateBlock(s: NodeState, control: @Composable () -> Unit = {}) {
     val err = s.error.takeIf { it.isNotEmpty() && s.reachable }
     val (label, color) = when {
         !s.answered -> "Waiting for data…" to LogosColors.gray400
@@ -158,10 +162,11 @@ private fun NodeStateBlock(s: NodeState) {
             modifier = Modifier.fillMaxWidth()) {
         Column(Modifier.padding(horizontal = 16.dp, vertical = 14.dp)) {
             Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                Text("Status", style = MaterialTheme.typography.labelLarge,
-                     color = MaterialTheme.colorScheme.onSurfaceVariant,
+                Text(label, fontWeight = FontWeight.Bold, color = color,
                      modifier = Modifier.weight(1f))
-                Text(label, fontWeight = FontWeight.Bold, color = color)
+                // Start/Stop lives HERE, next to the thing it acts on, rather than in the
+                // title bar where it sat beside an app name it has nothing to do with.
+                control()
             }
             // The node's own words, verbatim. Paraphrasing an error is how you lose the
             // one string that would have told you what actually happened.
@@ -319,7 +324,7 @@ private fun Empty(text: String) {
  * phone alerts on the same things the desktop indicator turns red for.
  */
 @Composable
-fun NotificationsTab(settings: Settings, onChanged: () -> Unit) {
+fun SettingsPage(settings: Settings, onChanged: () -> Unit, onDisconnect: () -> Unit) {
     var master by remember { mutableStateOf(settings.showNotifications) }
     var priv by remember { mutableStateOf(settings.privateNotifications) }
     // Recomposition key: toggling a per-event switch has to redraw the row it lives in.
@@ -359,6 +364,72 @@ fun NotificationsTab(settings: Settings, onChanged: () -> Unit) {
                     onCheck = { settings.setEnabled(e, it); rev++; onChanged() },
                 )
             }
+        }
+
+        Spacer(Modifier.height(28.dp))
+
+        // Outlined, not filled: this ends the pairing and the phone loses the node until
+        // it scans a new QR. Destructive enough to want deliberate, not eye-catching.
+        OutlinedButton(
+            onClick = onDisconnect,
+            modifier = Modifier.fillMaxWidth(),
+            border = BorderStroke(1.dp, LogosColors.red500),
+            colors = ButtonDefaults.outlinedButtonColors(contentColor = LogosColors.red500),
+        ) { Text("Disconnect", fontWeight = FontWeight.Medium) }
+
+        Text("Forgets this node. You'll need to scan a new QR from Basecamp to pair again.",
+             style = MaterialTheme.typography.labelSmall,
+             color = MaterialTheme.colorScheme.onSurfaceVariant,
+             modifier = Modifier.padding(top = 8.dp, bottom = 24.dp))
+    }
+}
+
+/**
+ * Lucide icons, rendered from their ACTUAL path data via PathParser rather than
+ * hand-approximated — the gear in particular is a 40-segment bezier outline that no
+ * amount of circles-and-ticks reproduces honestly.
+ *
+ * Source: lucide.dev, 24x24 viewBox, stroke 2, round cap/join.
+ */
+private object Lucide {
+    // lucide `settings`
+    const val SETTINGS =
+        "M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 " +
+        "0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 " +
+        "2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 " +
+        "2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 " +
+        "2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 " +
+        "2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 " +
+        "2 0 0 0-2-2z"
+    const val SETTINGS_HUB = "M15 12a3 3 0 1 1-6 0 3 3 0 0 1 6 0z"
+    // lucide `chevron-left`
+    const val CHEVRON_LEFT = "M15 18l-6-6 6-6"
+}
+
+/** Lucide `chevron-left`. A drawn glyph, not a text "‹" — a text chevron sits on the
+ *  font baseline and never lines up with an adjacent title. */
+@Composable
+fun ChevronLeftGlyph(tint: Color, size: Dp = 24.dp) {
+    val p = remember { PathParser().parsePathString(Lucide.CHEVRON_LEFT).toPath() }
+    Canvas(Modifier.size(size)) {
+        val s = this.size.minDimension / 24f
+        scale(s, pivot = Offset.Zero) {
+            drawPath(p, tint, style = Stroke(width = 2f, cap = StrokeCap.Round,
+                                             join = StrokeJoin.Round))
+        }
+    }
+}
+
+@Composable
+fun GearGlyph(tint: Color, size: Dp = 22.dp) {
+    val outline = remember { PathParser().parsePathString(Lucide.SETTINGS).toPath() }
+    val hub = remember { PathParser().parsePathString(Lucide.SETTINGS_HUB).toPath() }
+    Canvas(Modifier.size(size)) {
+        val s = this.size.minDimension / 24f          // Lucide's viewBox is 24x24
+        scale(s, pivot = Offset.Zero) {
+            val stroke = Stroke(width = 2f, cap = StrokeCap.Round, join = StrokeJoin.Round)
+            drawPath(outline, tint, style = stroke)
+            drawPath(hub, tint, style = stroke)
         }
     }
 }
