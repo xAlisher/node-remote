@@ -79,7 +79,7 @@ enum class Event(val key: String, val title: String, val blurb: String, val defa
     BALANCE_CHANGED("n_balance", "Balance changed",
         "Usually a leader reward landing", false),
     NEW_PROPOSAL("n_proposal", "Block proposed",
-        "This node won a leader slot and produced a block", false),
+        "Your node won a leader slot and produced a block", false),
 }
 
 data class Notice(val event: Event, val text: String)
