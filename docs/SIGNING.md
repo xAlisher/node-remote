@@ -40,9 +40,32 @@ NODE_REMOTE_RELEASE_KEY_PASSWORD
 
 Never reintroduce the unprefixed names here.
 
-## Creating the key (once)
+## The key (created 2026-08-12)
 
-Not yet done — this is the staging step. When you are ready:
+```
+Owner:      CN=Node Remote, O=Node Remote, C=US
+Algorithm:  RSA 4096, SHA384withRSA
+Valid:      2026-08-12 → 2053-12-27
+Keystore:   ~/.node-remote-signing/node-remote-release.jks   (0600, PKCS12)
+Alias:      node-remote
+
+SHA-256 (keytool form):
+  6D:80:DB:34:76:BC:AD:A7:8F:EF:A3:A1:6B:23:09:FD:1C:F8:30:E5:FC:83:6F:3E:9C:6C:48:67:80:51:AE:74
+SHA-256 (apksigner form):
+  6d80db3476bcada78fefa3a16b2309fd1cf830e5fc836f3e9c6c48678051ae74
+```
+
+Both forms are recorded because the two tools disagree on formatting — keytool prints
+colon-separated uppercase, apksigner prints bare lowercase — and a mismatch between them is
+a formatting difference, not a different key.
+
+**Verify against the DIGEST, never the name.** `CN=Node Remote` proves nothing: anyone can
+generate a key with that subject in ten seconds. The SHA-256 is the identity.
+
+## Recreating the key
+
+Already done — do NOT run this again; `tools/create-signing-key.fish` refuses if the
+keystore exists. Kept for the record:
 
 ```
 mkdir -p ~/.node-remote-signing
@@ -94,12 +117,15 @@ apksigner verify --print-certs app/build/outputs/apk/release/app-release.apk | g
 Expect `CN=Node Remote`. If it says `CN=Peers`, the global property leaked in again — stop,
 do not publish, and check the property names.
 
-Record the fingerprint here once the key exists:
+Expect:
 
 ```
-Signer #1 certificate DN:  CN=Node Remote, O=Node Remote, C=US
-Signer #1 SHA-256 digest:  (fill in at key creation)
+Signer #1 certificate DN:      CN=Node Remote, O=Node Remote, C=US
+Signer #1 certificate SHA-256: 6d80db3476bcada78fefa3a16b2309fd1cf830e5fc836f3e9c6c48678051ae74
 ```
+
+`tools/verify-signing.fish` checks the digest automatically and refuses to pass on
+anything else.
 
 ## F-Droid
 

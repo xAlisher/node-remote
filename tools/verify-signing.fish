@@ -38,19 +38,25 @@ echo
 echo "── Signer certificate ──"
 $APKSIGNER verify --print-certs $APK | grep -E "certificate DN|SHA-256 digest"
 
+# Match on the DIGEST, not the subject name. "CN=Node Remote" proves nothing — anyone can
+# generate a key with that subject in ten seconds. The SHA-256 is the identity.
+set -l EXPECTED "6d80db3476bcada78fefa3a16b2309fd1cf830e5fc836f3e9c6c48678051ae74"
+set -l ACTUAL ($APKSIGNER verify --print-certs $APK | grep -i "SHA-256 digest" | head -1 | string replace -r '.*:\s*' '' | string trim | string lower)
 set -l DN ($APKSIGNER verify --print-certs $APK | grep "certificate DN" | head -1)
 
 echo
-if string match -q '*CN=Node Remote*' -- $DN
-    echo "OK — signed by the Node Remote key. Safe to publish."
-    echo "Record the SHA-256 above in docs/SIGNING.md if you have not already."
+if test "$ACTUAL" = "$EXPECTED"
+    echo "OK — signed by the Node Remote key ($EXPECTED). Safe to publish."
 else if string match -q '*CN=Peers*' -- $DN
     echo "STOP. This APK is signed with the PEERS key."
     echo "The global RELEASE_STORE_FILE leaked in. Check that app/build.gradle reads the"
     echo "NODE_REMOTE_-prefixed property names. DO NOT PUBLISH THIS APK."
     exit 1
 else
-    echo "STOP. Unexpected signer: $DN"
+    echo "STOP. Signer digest does not match the Node Remote key."
+    echo "  expected: $EXPECTED"
+    echo "  actual:   $ACTUAL"
+    echo "  subject:  $DN"
     echo "Do not publish until you know whose key this is."
     exit 1
 end

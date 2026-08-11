@@ -52,8 +52,16 @@ end
 chmod 600 $KS
 
 echo
-echo "── Created. Fingerprint (record this in docs/SIGNING.md): ──"
-keytool -list -v -keystore $KS -alias $ALIAS 2>/dev/null | grep -E "SHA256:|Valid from"
+echo "── Created. ──"
+echo
+echo "Now print the fingerprint and record it in docs/SIGNING.md."
+echo "keytool will ask for the passphrase again — modern keystores are PKCS12, and even the"
+echo "PUBLIC certificate cannot be read without it, so this cannot be automated away:"
+echo
+echo "  keytool -list -v -keystore $KS -alias $ALIAS | grep -E 'SHA256:|Valid from'"
+echo
+# Deliberately NOT run here with stderr hidden: doing that swallowed keytool's password
+# prompt, and the fingerprint silently never printed.
 
 echo
 echo "── NEXT ─────────────────────────────────────────────────────────────────────"
