@@ -47,6 +47,13 @@ data class NodeState(
 }
 
 /**
+ * True when the desktop ANSWERED and refused us. That is a definitive reply, not silence,
+ * and it must never render as "Waiting for data…" — during the token bug the app sat on
+ * that spinner indefinitely while every poll was being told 401.
+ */
+fun NodeState.isRejected() = !answered && error.startsWith("HTTP 4")
+
+/**
  * A notifiable event. `key` is the settings toggle; `defaultOn` is its default.
  *
  * The set is grounded in what the ecodev watcher (infra/.../logos-node-monitor.py) actually

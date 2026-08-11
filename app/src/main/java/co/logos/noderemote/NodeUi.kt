@@ -188,6 +188,9 @@ private fun ErrorCard(text: String, control: @Composable () -> Unit = {}) {
 private fun NodeStateBlock(s: NodeState, control: @Composable () -> Unit = {}) {
     val err = s.error.takeIf { it.isNotEmpty() && s.reachable }
     val (label, color) = when {
+        // A 4xx is an ANSWER — the desktop heard us and refused. Showing the same spinner
+        // as "no reply yet" hides a fixable problem behind an infinite wait.
+        s.isRejected() -> "Not authorised — pair again" to LogosColors.red500
         !s.answered -> "Waiting for data…" to LogosColors.gray400
         err != null -> "Error" to LogosColors.red500
         !s.reachable -> "Unknown" to LogosColors.gray400
