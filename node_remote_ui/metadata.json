@@ -1,0 +1,19 @@
+{
+  "name": "node_remote_ui",
+  "display_name": "Node Remote",
+  "version": "0.1.0",
+  "type": "ui_qml",
+  "category": "blockchain",
+  "description": "Pair your phone with this node over a private Tor connection.",
+  "view": "qml/Main.qml",
+  "dependencies": [
+    "node_remote",
+    "qr"
+  ],
+  "nix": {
+    "packages": {
+      "build": [],
+      "runtime": []
+    }
+  }
+}
