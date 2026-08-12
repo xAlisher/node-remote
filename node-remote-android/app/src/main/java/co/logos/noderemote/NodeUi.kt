@@ -245,8 +245,11 @@ private fun NodeStateBlock(s: NodeState, control: @Composable () -> Unit = {}) {
         // as "no reply yet" hides a fixable problem behind an infinite wait.
         s.isRejected() -> "Not authorised — pair again" to LogosColors.red500
         !s.answered -> "Waiting for data…" to LogosColors.gray400
-        // Alive but replaying. Orange like Bootstrapping — busy, not broken.
-        s.isStarting() -> "Starting" to LogosColors.orange300
+        // Alive but replaying its database. 1-click calls this exact state "Recovering
+        // chain" (NodeDashboardView _statusDisplay), so we use its words rather than
+        // inventing a second name for one thing. Accent orange, matching Bootstrapping —
+        // busy, not broken. Not the CTA orange: that one belongs to buttons.
+        s.isStarting() -> "Recovering chain" to LogosColors.orange300
         err != null -> "Error" to LogosColors.red500
         !s.reachable -> "Unknown" to LogosColors.gray400
         s.state.equals("Online", true) -> "Online" to LogosColors.green500

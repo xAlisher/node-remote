@@ -148,7 +148,9 @@ QString NodeProbe::lastNodeError() const
         // recovering node in a red error card AND offered "Start node" for a node that was
         // already running.
         if (has(ln, "blocks to replay") || has(ln, "Chain recovery") || has(ln, "recovering chain state"))
-            return kNoticePrefix + QStringLiteral("The node is replaying stored blocks to catch up — this can take a few minutes.");
+            // Same wording 1-click puts under its status block (NodeDashboardView _subStatusText),
+            // so the desktop and the phone describe the same moment identically.
+            return kNoticePrefix + QStringLiteral("Replaying stored blocks…");
 
         if (has(ln, "crashed (signal") || has(ln, "panicked") || has(ln, "SIGABRT") || has(ln, "SIGSEGV"))
             return QStringLiteral("The node process crashed. Wipe the database and start over to recover.");

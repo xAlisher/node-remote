@@ -281,7 +281,12 @@ class MainActivity : ComponentActivity() {
         // It also mis-gated the settings page: Wipe/Regenerate are enabled on !nodeRunning,
         // so both were offered against a LIVE bootstrapping node. The desktop refuses that
         // server-side, but the UI should not be offering it.
-        val running = state.reachable
+        // reachable OR recovering. A node replaying its database has not brought its API up
+        // yet, so `reachable` is false — but the process is alive and stoppable, and a node
+        // stuck mid-replay is exactly when you want to be able to stop it. 1-click disables
+        // its control here; we deliberately do not, because "no button at all" leaves you
+        // with nothing to do but wait.
+        val running = state.reachable || state.isStarting()
 
         // Destructive-ish and remote: stopping a node from a phone by accident is a bad
         // afternoon, so it goes through a confirm rather than firing on tap.
@@ -460,8 +465,8 @@ class MainActivity : ComponentActivity() {
                                 // (reachable is false), but it still READ "Start node",
                                 // which tells you the node is down when it is working. Show
                                 // the truth instead: it is starting.
-                                val starting = state.isStarting()
-                                val on = !busy && !starting && state.reachable
+                                // Offer Stop while recovering — see `running` above.
+                                val on = !busy
                                 val tint = (if (running) LogosColors.white else LogosColors.green500)
                                     .copy(alpha = if (on) 1f else 0.38f)
                                 TextButton(
@@ -469,14 +474,9 @@ class MainActivity : ComponentActivity() {
                                     onClick = { confirm = if (running) "stop" else "start" },
                                     contentPadding = PaddingValues(horizontal = 8.dp, vertical = 0.dp),
                                 ) {
-                                    if (busy || starting) {
+                                    if (busy) {
                                         CircularProgressIndicator(Modifier.size(16.dp),
-                                            strokeWidth = 2.dp, color = LogosColors.orange300)
-                                        if (starting) {
-                                            Spacer(Modifier.width(8.dp))
-                                            Text("Starting", color = LogosColors.orange300,
-                                                 fontWeight = FontWeight.Medium, fontSize = 14.sp)
-                                        }
+                                            strokeWidth = 2.dp, color = tint)
                                     } else {
                                         if (running) StopGlyph(tint) else PlayGlyph(tint)
                                         Spacer(Modifier.width(8.dp))
