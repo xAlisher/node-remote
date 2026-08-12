@@ -1,5 +1,6 @@
 #pragma once
 
+#include <QMutex>
 #include <QString>
 #include <string>
 #include "logos_module_context.h"
@@ -139,6 +140,10 @@ private:
     void refreshBalance();
     QTimer* m_balanceTimer = nullptr;
     bool    m_ipcBusy = false;      // re-entrancy guard around synchronous wallet IPC
+    // Guards the four strings below: written on the balance timer, read on the HTTP
+    // request path, and the two demonstrably overlap. Unsynchronised QString sharing
+    // across threads is what was killing the module.
+    mutable QMutex m_balanceMu;
     QString m_primaryAddress, m_balanceRaw, m_balance, m_balanceError;
 
     OnionService* m_onion = nullptr;

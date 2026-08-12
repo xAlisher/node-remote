@@ -21,6 +21,7 @@
 #include <QJsonObject>
 #include <QStandardPaths>
 #include <QTimer>
+#include <QMutexLocker>
 
 namespace {
 std::string dump(const QJsonObject& o)
@@ -28,6 +29,12 @@ std::string dump(const QJsonObject& o)
     return QJsonDocument(o).toJson(QJsonDocument::Compact).toStdString();
 }
 }  // namespace
+
+// Crash bisection. node_remote takes SIGSEGV ~77-80s after load, consistently, and the
+// platform's backtrace is raw addresses with no symbols. These traces exist so the LAST
+// line before the fault names the operation in flight — cheaper than a symbolised core,
+// and the interval evidence has already misled me once (moving the balance timer 15s->30s
+// did not move the crash).
 
 // The probe is owned here and outlives both the HTTP surface and the onion.
 static NodeProbe* g_probe = nullptr;
@@ -175,10 +182,24 @@ std::string NodeRemoteImpl::getNodeStatus()
     //
     // Polling on a timer also stops the wallet RPC being hit once per phone poll forever,
     // which it was.
-    if (!m_primaryAddress.isEmpty()) o["primaryAddress"] = m_primaryAddress;
-    if (!m_balanceRaw.isEmpty())     o["balanceRaw"] = m_balanceRaw;
-    if (!m_balance.isEmpty())        o["balance"] = m_balance;
-    if (!m_balanceError.isEmpty())   o["balanceError"] = m_balanceError;
+    // THE CRASH. These four QStrings are written by refreshBalance() on the module's timer
+    // and read here on the HTTP request path, and the trace proves those overlap:
+    //
+    //   01:52:49.825  getNodeStatus: begin      <- phone request
+    //   01:52:50.014  balance: begin            <- timer fires 190ms later, mid-request
+    //   01:53:09.886  SIGSEGV
+    //
+    // QString is implicitly shared and its refcount is NOT safe against a concurrent
+    // write, so an unsynchronised read/write tears the shared data block and the process
+    // dies later, somewhere unrelated — which is why three crashes produced a useless
+    // backtrace and why "balance: begin" with no matching "end" preceded every one.
+    {
+        QMutexLocker lk(&m_balanceMu);
+        if (!m_primaryAddress.isEmpty()) o["primaryAddress"] = m_primaryAddress;
+        if (!m_balanceRaw.isEmpty())     o["balanceRaw"] = m_balanceRaw;
+        if (!m_balance.isEmpty())        o["balance"] = m_balance;
+        if (!m_balanceError.isEmpty())   o["balanceError"] = m_balanceError;
+    }
     return QJsonDocument(o).toJson(QJsonDocument::Compact).toStdString();
 }
 
@@ -193,34 +214,53 @@ void NodeRemoteImpl::refreshBalance()
     // two seconds after a balance tick, with blocks arriving throughout. This guard stops
     // us stacking a second wallet call inside the first; it does NOT make the platform's
     // sync IPC reentrant, so it is a mitigation, not a proof. See docs/TESTING.md.
-    if (m_ipcBusy) return;
     m_ipcBusy = true;
     struct Clear { bool& b; ~Clear() { b = false; } } clear{m_ipcBusy};
 
+    // Everything below writes LOCALS. The shared members are only touched at the end,
+    // under the mutex, so a reader never observes a half-written QString.
     const StdLogosResult addrs = modules().blockchain_module.wallet_get_known_addresses();
     if (!addrs.success) {
         // Instance-bound: the wallet RPCs answer only in the blockchain_module that is
         // actually running the node. Keep the last good figure and say why it is stale.
+        QMutexLocker lk(&m_balanceMu);
         m_balanceError = QString::fromStdString(addrs.error);
         return;
     }
-    m_balanceError.clear();
 
     QString primary;
     const QJsonDocument ad = QJsonDocument::fromJson(QByteArray::fromStdString(addrs.value.dump()));
     if (ad.isArray() && !ad.array().isEmpty())      primary = ad.array().first().toString();
     else if (ad.isObject())                         primary = ad.object().value("address").toString();
-    if (primary.isEmpty()) return;
-    m_primaryAddress = primary;
+    if (primary.isEmpty()) {
+        QMutexLocker lk(&m_balanceMu);
+        m_balanceError = QStringLiteral("the wallet reported no addresses");
+        return;
+    }
 
     const StdLogosResult bal = modules().blockchain_module.wallet_get_balance(primary.toStdString());
-    if (!bal.success) return;
+    if (!bal.success) {
+        // REPORT it. This path used to clear the error and return, so a wallet whose
+        // address resolved but whose balance call failed showed a bare "—" on the phone
+        // with no reason anywhere — indistinguishable from "not fetched yet". Observed
+        // live: primaryAddress present, balance absent, balanceError absent.
+        QMutexLocker lk(&m_balanceMu);
+        m_primaryAddress = primary;
+        m_balanceError = QString::fromStdString(bal.error);
+        return;
+    }
     const QString raw = QString::fromStdString(bal.value.dump()).remove('"');
     bool okNum = false;
     const double v = raw.toDouble(&okNum);
-    m_balanceRaw = raw;
-    // Kept for older clients; the phone formats from balanceRaw with 1-click's algorithm.
-    if (okNum) m_balance = QString::number(v / 10000.0, 'f', 4);
+
+    {
+        QMutexLocker lk(&m_balanceMu);
+        m_balanceError.clear();
+        m_primaryAddress = primary;
+        m_balanceRaw = raw;
+        // Kept for older clients; the phone formats from balanceRaw with 1-click's algorithm.
+        if (okNum) m_balance = QString::number(v / 10000.0, 'f', 4);
+    }
 }
 
 void NodeRemoteImpl::onContextReady()
