@@ -70,7 +70,10 @@ NodeRemoteImpl::NodeRemoteImpl()
         return QByteArray::fromStdString(getNodeStatus());
     });
     m_http->setStartHandler([this] {
-        return QByteArray::fromStdString(startNode("", "logos.test"));
+        // Empty deployment → startNode resolves it from the shared config (matches the
+        // desktop). Do NOT hardcode a name here: blockchain_module treats the deployment
+        // arg as a FILE path, so a literal like "logos.test" fails to parse.
+        return QByteArray::fromStdString(startNode("", ""));
     });
     m_http->setStopHandler([this] {
         return QByteArray::fromStdString(stopNode());
@@ -407,9 +410,48 @@ std::string NodeRemoteImpl::startNode(const std::string& configPath,
         return dump(r);
     }
 
-    const StdLogosResult res = modules().blockchain_module.start(cfg, deployment);
-    r["ok"] = res.success;
-    if (!res.success) r["error"] = QString::fromStdString(res.error);
+    // Resolve the deployment the SAME way logos-blockchain-ui does: the persisted
+    // deploymentConfigPath, which is normally EMPTY (the node's default embedded deployment).
+    // The /v1/start route used to hardcode "logos.test", which blockchain_module then tried
+    // to open as a file → "Could not parse deployment file: No such file or directory", so a
+    // phone-initiated start failed on any node configured with the default deployment.
+    const std::string dep = deployment.empty()
+                                ? g_probe->deploymentConfigPath().toStdString()
+                                : deployment;
+
+    const StdLogosResult res = modules().blockchain_module.start(cfg, dep);
+    if (res.success) {
+        // Record the user's intent in the shared store so the desktop agrees the node is
+        // meant to be up. See node_probe.cpp readIntent()/writeIntent().
+        g_probe->writeIntent(NodeProbe::Intent::Started);
+        r["ok"] = true;
+        r["code"] = "started";
+    } else {
+        const QString err = QString::fromStdString(res.error);
+        if (err.contains(QLatin1String("already running"), Qt::CaseInsensitive)) {
+            // Idempotent: the node is already up, which is what the caller wanted.
+            g_probe->writeIntent(NodeProbe::Intent::Started);
+            r["ok"] = true;
+            r["code"] = "already_running";
+        } else if (err.isEmpty()
+                   || err.contains(QLatin1String("Call failed"), Qt::CaseInsensitive)
+                   || err.contains(QLatin1String("timed out"), Qt::CaseInsensitive)
+                   || err.contains(QLatin1String("no reply"), Qt::CaseInsensitive)) {
+            // No CLEAN reply from the start RPC. On this node that means the node is still
+            // coming up — a slow chain recovery routinely outlives the RPC deadline — NOT a
+            // failure. logos-blockchain-ui handles this identically: it stays in Starting and
+            // lets the liveness poll confirm (logos_node_1click_backend.cpp:917-920). Report
+            // it as "starting" (ok, so the phone shows Starting — never a red error); the
+            // /v1/status poll then resolves it to Running, or to a real Error from the log.
+            g_probe->writeIntent(NodeProbe::Intent::Started);
+            r["ok"] = true;
+            r["code"] = "starting";
+        } else {
+            r["ok"] = false;
+            r["error"] = err;
+            r["code"] = "start_failed";
+        }
+    }
     r["configPath"] = QString::fromStdString(cfg);
     return dump(r);
 }
@@ -418,8 +460,25 @@ std::string NodeRemoteImpl::stopNode()
 {
     const StdLogosResult res = modules().blockchain_module.stop();
     QJsonObject r;
-    r["ok"] = res.success;
-    if (!res.success) r["error"] = QString::fromStdString(res.error);
+    if (res.success) {
+        g_probe->writeIntent(NodeProbe::Intent::Stopped);
+        r["ok"] = true;
+        r["code"] = "stopped";
+    } else {
+        const QString err = QString::fromStdString(res.error);
+        if (err.contains(QLatin1String("not running"), Qt::CaseInsensitive)) {
+            // Idempotent: stopping an already-stopped node is success, not an error. This
+            // is what surfaced the scary "deploy config" card on the phone. The user's
+            // intent is still "stopped", so record it.
+            g_probe->writeIntent(NodeProbe::Intent::Stopped);
+            r["ok"] = true;
+            r["code"] = "already_stopped";
+        } else {
+            r["ok"] = false;
+            r["error"] = err;
+            r["code"] = "stop_failed";
+        }
+    }
     return dump(r);
 }
 

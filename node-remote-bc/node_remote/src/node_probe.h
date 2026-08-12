@@ -34,10 +34,31 @@ public:
     /// falling back to the newest module_data/blockchain_module/*/user_config.yaml.
     QString userConfigPath() const;
 
+    /// The deployment file path the desktop UI persists (QSettings key deploymentConfigPath).
+    /// EMPTY is normal and valid — it means the node's default embedded deployment, which is
+    /// exactly what logos-blockchain-ui passes to blockchain_module.start(). A phone-initiated
+    /// start must use the SAME value, not a hardcoded name that blockchain_module then tries
+    /// to open as a file.
+    QString deploymentConfigPath() const;
+
     /// The node's own log, mapped to a plain-language cause. Ported from
     /// logos_node_1click_backend::lastNodeError() so both surfaces explain a failure the
     /// same way. Empty when nothing recognisable is in the tail.
     QString lastNodeError() const;
+
+    /// Binary user intent, SHARED with logos-blockchain-ui through the QSettings both
+    /// modules already use (org "Logos", app "BlockchainUI", key "nodeIntent"). Start/Stop
+    /// is the only thing a user commands; every richer state is node-driven and observed.
+    /// This lets a Stop on the phone read as "Stopped" on the desktop, and vice versa.
+    enum class Intent { Unknown, Started, Stopped };
+    Intent readIntent() const;
+    void   writeIntent(Intent) const;   // writes only on change — no per-poll churn
+
+    /// Active chain-recovery (block replay after an unclean restart), parsed from the node
+    /// log exactly as logos_node_1click_backend::getRecoveryStatus() does, so the phone can
+    /// show the SAME "Replaying N stored blocks…" the desktop shows.
+    struct Recovery { bool active = false; int blocks = 0; };
+    Recovery recoveryStatus() const;
 
     /// Combined status payload. Never throws; on any failure the JSON carries
     /// "reachable":false plus an "error" string, so the phone can render honestly

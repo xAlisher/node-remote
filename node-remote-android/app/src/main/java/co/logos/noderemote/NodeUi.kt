@@ -96,7 +96,10 @@ fun StatusTab(s: NodeState, raw: String, note: String = "",
         // a failure is contradictory, and the reader has to work out which to believe.
         // Shown in full — the longest real one measured is 131 chars (a YAML syntax error
         // carrying line/column), and truncating that discards the part that locates it.
-        val nodeErr = s.error.takeIf { it.isNotEmpty() && s.answered }
+        // Only the honest Error state paints the red card. The module populates `error`
+        // exclusively when status=="Error" (node meant to be up, down with a cause), so a
+        // stopped/recovering node never shows red here.
+        val nodeErr = s.error.takeIf { it.isNotEmpty() && s.status == "Error" }
         val shown = note.takeIf { it.isNotEmpty() } ?: nodeErr
         if (shown != null) ErrorCard(shown, control)
         else NodeStateBlock(s, control)
@@ -239,22 +242,31 @@ fun fmtLgo(raw: String): String {
 
 @Composable
 private fun NodeStateBlock(s: NodeState, control: @Composable () -> Unit = {}) {
-    val err = s.error.takeIf { it.isNotEmpty() && s.reachable }
     val (label, color) = when {
         // A 4xx is an ANSWER — the desktop heard us and refused. Showing the same spinner
         // as "no reply yet" hides a fixable problem behind an infinite wait.
         s.isRejected() -> "Not authorised — pair again" to LogosColors.red500
         !s.answered -> "Waiting for data…" to LogosColors.gray400
         // Alive but replaying its database. 1-click calls this exact state "Recovering
-        // chain" (NodeDashboardView _statusDisplay), so we use its words rather than
-        // inventing a second name for one thing. Accent orange, matching Bootstrapping —
-        // busy, not broken. Not the CTA orange: that one belongs to buttons.
-        s.isStarting() -> "Recovering chain" to LogosColors.orange300
-        err != null -> "Error" to LogosColors.red500
-        !s.reachable -> "Unknown" to LogosColors.gray400
+        // chain" (NodeDashboardView _statusDisplay), so we use its words. The block below
+        // (StatusTab) shows the "Replaying N stored blocks…" sub-line from s.notice, giving
+        // the same title+subtitle pair the desktop shows. Orange: busy, not broken.
+        s.isRecovering() -> "Recovering chain" to LogosColors.orange300
+        // The node reported an actual, actionable failure — the ONLY red node state. The
+        // module sets status=="Error" solely when the node was meant to be up and is down
+        // with a cause, so a deliberately stopped node can never land here.
+        s.status == "Error" && s.error.isNotEmpty() -> "Error" to LogosColors.red500
+        // The user asked for the node to be off, and it is. Neutral, never red — and the
+        // control still offers Start. This is what a phone-initiated stop must read as,
+        // instead of the old red "deploy config" card.
+        s.isStopped() -> "Node stopped" to LogosColors.gray400
         s.state.equals("Online", true) -> "Online" to LogosColors.green500
         s.state.equals("Bootstrapping", true) -> "Bootstrapping" to LogosColors.orange300
         s.status == "Running" -> s.state.ifEmpty { "Running" } to LogosColors.orange300
+        // Coming up, but not yet replaying and not yet answering. Its own honest word —
+        // NOT "Recovering chain" (there is nothing to replay).
+        s.isStarting() -> "Starting…" to LogosColors.orange300
+        !s.reachable -> "Unknown" to LogosColors.gray400
         else -> "Not Started" to LogosColors.red500
     }
     Surface(color = color.copy(alpha = 0.12f), shape = MaterialTheme.shapes.medium,

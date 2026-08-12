@@ -9,6 +9,7 @@
 #include <QJsonObject>
 #include <QNetworkReply>
 #include <QNetworkRequest>
+#include <QRegularExpression>
 #include <QSettings>
 #include <QStandardPaths>
 #include <QTextStream>
@@ -38,6 +39,14 @@ QString NodeProbe::userConfigPath() const
         if (best.isEmpty() || fi.lastModified() > bestT) { best = cand; bestT = fi.lastModified(); }
     }
     return best;
+}
+
+QString NodeProbe::deploymentConfigPath() const
+{
+    // Same store logos-blockchain-ui writes deploymentConfig() to. Empty is the normal
+    // testnet case (default embedded deployment) — return it verbatim, empty and all.
+    QSettings s(QStringLiteral("Logos"), QStringLiteral("BlockchainUI"));
+    return s.value(QStringLiteral("deploymentConfigPath")).toString();
 }
 
 QString NodeProbe::apiBase() const
@@ -182,6 +191,67 @@ QString NodeProbe::lastNodeError() const
     return {};
 }
 
+// Intent lives in the SAME QSettings logos-blockchain-ui uses (see userConfigPath()), so
+// a Start/Stop on either surface is visible to the other. Single key, single node: keyed
+// per-instance would be needed only once we run more than one node from one desktop.
+static const QString kIntentKey = QStringLiteral("nodeIntent");
+
+NodeProbe::Intent NodeProbe::readIntent() const
+{
+    QSettings s(QStringLiteral("Logos"), QStringLiteral("BlockchainUI"));
+    const QString v = s.value(kIntentKey).toString();
+    if (v == QLatin1String("started")) return Intent::Started;
+    if (v == QLatin1String("stopped")) return Intent::Stopped;
+    return Intent::Unknown;
+}
+
+void NodeProbe::writeIntent(Intent in) const
+{
+    if (in == Intent::Unknown) return;
+    const QString v = (in == Intent::Started) ? QStringLiteral("started")
+                                              : QStringLiteral("stopped");
+    QSettings s(QStringLiteral("Logos"), QStringLiteral("BlockchainUI"));
+    if (s.value(kIntentKey).toString() == v) return;   // no per-poll write churn
+    s.setValue(kIntentKey, v);
+}
+
+NodeProbe::Recovery NodeProbe::recoveryStatus() const
+{
+    // Ported from logos_node_1click_backend::getRecoveryStatus() so the desktop and the
+    // phone report the same block count. Newest marker wins: a completion after a start
+    // means recovery is done.
+    Recovery out;
+    const QString cfg = userConfigPath();
+    if (cfg.isEmpty()) return out;
+    const QDir logsDir(QFileInfo(cfg).absoluteDir().filePath(QStringLiteral("logs")));
+    if (!logsDir.exists()) return out;
+    const QFileInfoList files = logsDir.entryInfoList(QDir::Files, QDir::Time);
+    if (files.isEmpty()) return out;
+
+    QFile f(files.first().absoluteFilePath());
+    if (!f.open(QIODevice::ReadOnly | QIODevice::Text)) return out;
+    const qint64 tail = qMin<qint64>(f.size(), 256 * 1024);
+    f.seek(f.size() - tail);
+    const QStringList lines = QString::fromUtf8(f.readAll()).split(QLatin1Char('\n'));
+    f.close();
+
+    static const QRegularExpression reFound(
+        QStringLiteral("found (\\d+) stored blocks to replay"));
+    for (int i = lines.size() - 1; i >= 0; --i) {
+        const QString& ln = lines.at(i);
+        if (ln.contains(QStringLiteral("Chain recovery finished"))
+            || ln.contains(QStringLiteral("blocks replayed")))
+            return out;   // completion is the most recent marker → done
+        const QRegularExpressionMatch m = reFound.match(ln);
+        if (m.hasMatch()) {
+            out.active = true;
+            out.blocks = m.captured(1).toInt();
+            return out;
+        }
+    }
+    return out;
+}
+
 QByteArray NodeProbe::statusJson()
 {
     QJsonObject out;
@@ -191,26 +261,57 @@ QByteArray NodeProbe::statusJson()
     bool ok = false;
     const QByteArray info = get(apiBase() + "/cryptarchia/info", 2000, &ok);
     if (!ok) {
-        // Honest failure: distinguish "node not running" from "we have no idea".
+        // The node's API is not answering. What that MEANS depends on intent (did the user
+        // ask for it up?) and on whether the node is alive-but-replaying. Only a node that
+        // was expected up and is genuinely failing gets an error — this is where the
+        // "deploy config on stop" bug lived (a clean stop inherited a stale log line).
         out["reachable"] = false;
-        out["status"] = "NotRunning";
-        // Ask the node's own log WHY instead of reporting a generic unreachable. A stopped
-        // node is a normal state, so only attach an error when the log actually explains
-        // a failure — otherwise the phone shows "Not Started", which is the truth.
+        const Intent intent = readIntent();
+        out["intent"] = (intent == Intent::Started) ? "started"
+                        : (intent == Intent::Stopped) ? "stopped"
+                                                      : "unknown";
+
+        const Recovery rec = recoveryStatus();
         const QString honest = lastNodeError();
-        if (honest.startsWith(kNoticePrefix)) {
-            // The node is up and busy recovering. Report it as Starting — the same status
-            // 1-click uses mid-transition, where it DISABLES the node control rather than
-            // offering to start what is already started.
-            out["status"] = "Starting";
-            out["notice"] = honest.mid(kNoticePrefix.size());
-        } else if (!honest.isEmpty()) {
+
+        if (rec.active || honest.startsWith(kNoticePrefix)) {
+            // Alive, replaying stored blocks before the API comes up. A DISTINCT state from
+            // a plain start — the phone shows "Recovering chain" only here, with the count.
+            out["status"] = "Recovering";
+            QJsonObject r;
+            r["active"] = true;
+            r["blocks"] = rec.blocks;
+            out["recovering"] = r;
+            out["notice"] = rec.blocks > 0
+                ? QStringLiteral("Replaying %1 stored blocks…").arg(rec.blocks)
+                : QStringLiteral("Replaying stored blocks…");
+        } else if (intent == Intent::Stopped) {
+            // The user asked for this. A stopped node is not a failure — never scrape the
+            // log for an error here.
+            out["status"] = "Stopped";
+        } else if (intent == Intent::Started && !honest.isEmpty()) {
+            // Expected up, down with an actionable cause. The ONLY path that surfaces the
+            // error table.
+            out["status"] = "Error";
             out["error"] = honest;
+        } else if (intent == Intent::Started) {
+            // Expected up, no fatal log yet — coming up.
+            out["status"] = "Starting";
+        } else {
+            // Unknown intent (e.g. stopped from the desktop before it wrote the shared
+            // intent — see logos-blockchain-ui#40). Degrade to neutral, never invent an
+            // error. A real recovery/bootstrap will correct this on the next poll.
+            out["status"] = "Stopped";
         }
         return QJsonDocument(out).toJson(QJsonDocument::Compact);
     }
 
     out["reachable"] = true;
+    // The node answered → it is up. Self-heal the shared intent so a node started on the
+    // desktop (or that recovered on its own) reads as "started" on both surfaces even
+    // before logos-blockchain-ui#40 lands.
+    writeIntent(Intent::Started);
+    out["intent"] = "started";
 
     // Verified live shape (node v0.2.1, 2026-08-11):
     //   {"cryptarchia_info":{"lib","lib_slot","tip","slot","height","state"},"phase":"Following"}

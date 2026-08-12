@@ -182,6 +182,11 @@ class MainActivity : ComponentActivity() {
                 TorClient.get("http://$onion/v1/status", token)
                     .onSuccess { rawStatus = it; state = NodeState.parse(it, System.currentTimeMillis()) }
                     .onFailure { state = NodeState.unreachable(System.currentTimeMillis(), it.message.orEmpty()) }
+                // A control-response note is transient. Once the node has settled into a
+                // healthy or cleanly-stopped state, a lingering note (e.g. a slow-start
+                // message) is stale — drop it so it can't sit on screen as a red card while
+                // the node is plainly running.
+                if (state.reachable || state.isStopped()) note = ""
                 TorClient.get("http://$onion/v1/blocks", token).onSuccess { blocks = Block.list(it) }
                 TorClient.get("http://$onion/v1/proposals", token).onSuccess { proposals = Proposal.list(it) }
             }
@@ -227,6 +232,7 @@ class MainActivity : ComponentActivity() {
                     runCatching {
                         val o = org.json.JSONObject(body)
                         val err = o.optString("error")
+                        val code = o.optString("code")
                         when {
                             // Regenerate is the one success worth a word: the module returns
                             // the REAL backup path it just wrote, and that is precisely what
@@ -236,15 +242,23 @@ class MainActivity : ComponentActivity() {
                                 o.optString("backup").takeIf { it.isNotEmpty() }
                                     ?.let { "Config regenerated. Previous file saved as $it" }
                                     ?: ""
-                            o.optBoolean("ok", false) -> ""       // success: nothing to say
-                            // NOT an error: the request's INTENT was already satisfied.
-                            // "The node is not running" in reply to a STOP is the desired
-                            // end state, and painting a normal stopped node red teaches
-                            // people to ignore the red box that does matter.
+                            // Trust STRUCTURE, not phrasing. The module returns ok:true for a
+                            // real stop/start AND for the idempotent already_stopped/
+                            // already_running cases, so a satisfied intent says nothing.
+                            o.optBoolean("ok", false) -> ""
+                            // Structured idempotent codes, in case a build returns ok:false
+                            // with a code (belt and suspenders).
+                            code == "already_stopped" || code == "already_running" -> ""
+                            // Fallback for OLDER desktop modules that still reply ok:false
+                            // with only an English message and no code.
                             isAlreadyInDesiredState(path, err) -> ""
-                            else -> err.ifEmpty { body }
+                            // A genuine failure. Show the module's message — but NEVER the
+                            // raw envelope: an empty error used to dump the whole JSON body on
+                            // screen in red (seen on a slow start), which reads as a crash for
+                            // what is often just the node still coming up.
+                            else -> err.ifEmpty { "Couldn't ${path} the node — check the desktop" }
                         }
-                    }.getOrElse { body }
+                    }.getOrElse { "Couldn't ${path} the node — check the desktop" }
                 },
                 onFailure = { it.message ?: "request failed" },
             )
@@ -281,12 +295,13 @@ class MainActivity : ComponentActivity() {
         // It also mis-gated the settings page: Wipe/Regenerate are enabled on !nodeRunning,
         // so both were offered against a LIVE bootstrapping node. The desktop refuses that
         // server-side, but the UI should not be offering it.
-        // reachable OR recovering. A node replaying its database has not brought its API up
-        // yet, so `reachable` is false — but the process is alive and stoppable, and a node
-        // stuck mid-replay is exactly when you want to be able to stop it. 1-click disables
-        // its control here; we deliberately do not, because "no button at all" leaves you
-        // with nothing to do but wait.
-        val running = state.reachable || state.isStarting()
+        // reachable OR coming-up (starting/recovering). A node replaying its database has
+        // not brought its API up yet, so `reachable` is false — but the process is alive and
+        // stoppable, and a node stuck mid-replay is exactly when you want to be able to stop
+        // it. 1-click disables its control here; we deliberately do not, because "no button
+        // at all" leaves you with nothing to do but wait. A Stopped node is NOT running, so
+        // it correctly offers Start.
+        val running = state.reachable || state.isStarting() || state.isRecovering()
 
         // Destructive-ish and remote: stopping a node from a phone by accident is a bad
         // afternoon, so it goes through a confirm rather than firing on tap.

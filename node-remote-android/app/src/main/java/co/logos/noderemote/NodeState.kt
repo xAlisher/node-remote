@@ -14,7 +14,7 @@ data class NodeState(
     val answered: Boolean = false,
     /** The desktop reached the NODE's API. Only meaningful when [answered]. */
     val reachable: Boolean = false,
-    val status: String = "",        // Running | Starting | Stopped | NotRunning | …
+    val status: String = "",        // Running | Starting | Recovering | Bootstrapping | Stopped | Error
     val state: String = "",         // Online | Bootstrapping
     val phase: String = "",
     val height: Long = -1,
@@ -27,11 +27,17 @@ data class NodeState(
      * it means the node is ALIVE, so offering "Start node" would be wrong.
      */
     val notice: String = "",
+    /** Shared binary user intent as the desktop last recorded it: started | stopped | unknown. */
+    val intent: String = "",
+    /** Active chain recovery (block replay). [recoveryBlocks] is 0 when the count is unknown. */
+    val recovering: Boolean = false,
+    val recoveryBlocks: Int = 0,
     val atMillis: Long = 0,
 ) {
     companion object {
         fun parse(json: String, now: Long): NodeState = runCatching {
             val o = JSONObject(json)
+            val rec = o.optJSONObject("recovering")
             NodeState(
                 answered = true,
                 reachable = o.optBoolean("reachable", false),
@@ -43,6 +49,9 @@ data class NodeState(
                 peers = o.optInt("peers", -1),
                 error = o.optString("error"),
                 notice = o.optString("notice"),
+                intent = o.optString("intent"),
+                recovering = rec?.optBoolean("active", false) ?: (o.optString("status") == "Recovering"),
+                recoveryBlocks = rec?.optInt("blocks", 0) ?: 0,
                 atMillis = now,
             )
         }.getOrElse { NodeState(answered = true, error = "unparseable", atMillis = now) }
@@ -59,11 +68,19 @@ data class NodeState(
  * that spinner indefinitely while every poll was being told 401.
  */
 /**
- * The node is up and busy coming back (replaying blocks). The API is not answering yet, so
- * `reachable` is false — but the process is alive and start/stop must be disabled, not
- * offered. Mirrors 1-click, which treats Starting/Stopping as busy and disables its control.
+ * Alive but replaying stored blocks before its API comes up — 1-click's "Recovering chain".
+ * The process is up, so offer Stop, not Start. [recoveryBlocks] gives the count when known.
+ */
+fun NodeState.isRecovering() = recovering || status == "Recovering"
+
+/**
+ * The node is coming up but not yet replaying and not yet answering — a plain "Starting…".
+ * Distinct from [isRecovering]: conflating the two labelled every startup "Recovering chain".
  */
 fun NodeState.isStarting() = status == "Starting"
+
+/** The user asked for the node to be off, and it is. Neutral — not a failure, not red. */
+fun NodeState.isStopped() = status == "Stopped"
 
 fun NodeState.isRejected() = !answered && error.startsWith("HTTP 4")
 
@@ -113,6 +130,15 @@ object Transitions {
     fun diff(prev: NodeState?, cur: NodeState, stalledSinceMillis: Long?): List<Notice> {
         if (prev == null) return emptyList()          // first frame is a baseline, not news
         val out = mutableListOf<Notice>()
+
+        // A deliberate stop: the DESKTOP answered and told us the node is Stopped, having
+        // previously been up. This is a real node-down event, NOT a link loss — the desktop
+        // is right here answering — so it must fire "Node stopped", which the old
+        // both-reachable guard below could never reach (a stopped node has reachable=false).
+        if (cur.answered && cur.isStopped() && (prev.reachable || prev.status == "Running")) {
+            out += Notice(Event.NODE_STOPPED, "Your node stopped")
+            return out   // a clean stop is the whole story; don't also cry LINK_LOST
+        }
 
         // Link lost: we cannot reach the desktop. NOT the same as the node stopping — the
         // node may be perfectly fine and the phone simply off Wi-Fi.

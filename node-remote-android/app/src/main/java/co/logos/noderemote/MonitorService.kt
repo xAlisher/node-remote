@@ -110,8 +110,18 @@ class MonitorService : Service() {
 
     private fun updateOngoing(s: NodeState) {
         val text = when {
-            !s.reachable -> "can't reach your node"
+            // Only "can't reach" when the DESKTOP itself did not answer — not when it
+            // answered and told us the node is deliberately stopped/recovering.
+            !s.answered -> "can't reach your node"
+            s.isStopped() -> "Node stopped"
+            s.isRecovering() ->
+                if (s.recoveryBlocks > 0) "Recovering — replaying ${s.recoveryBlocks} blocks"
+                else "Recovering chain"
             s.status == "Running" -> "height ${s.height} · ${s.peers} peers · ${s.state}"
+            s.state.equals("Bootstrapping", true) -> "Bootstrapping"
+            s.isStarting() -> "Starting…"
+            s.status == "Error" -> "Node error"
+            !s.reachable -> "can't reach your node"
             else -> s.status
         }
         getSystemService(NotificationManager::class.java).notify(FG_ID, ongoing("Node Remote", text))

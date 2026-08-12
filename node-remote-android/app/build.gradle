@@ -119,4 +119,10 @@ dependencies {
     // matters on GrapheneOS.
     implementation "com.journeyapps:zxing-android-embedded:4.3.0"
     implementation "androidx.appcompat:appcompat:1.7.0"
+
+    // JVM unit tests for the pure state logic (NodeState parse/helpers + Transitions).
+    // org.json is provided by the Android framework at runtime but not on the plain-JVM
+    // unit-test classpath, so it is added explicitly (same API).
+    testImplementation "junit:junit:4.13.2"
+    testImplementation "org.json:json:20240303"
 }
