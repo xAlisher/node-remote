@@ -29,19 +29,22 @@ separate machine — not inferred from a build succeeding.
   instead of an error with a Start button.
 - **Blocks.** The `onNewBlock` subscription delivers; `/v1/blocks` returned 100 blocks with
   the full field set (blockRoot, entropy, leaderKey, parentBlock…) against a live node.
+- **Balance, on screen.** Previously listed as unproven twice over. The figure now arrives
+  on the phone against a live node — observed, with the desktop showing the same number.
+- **Node control, both directions.** Stop and Start driven from the phone; the desktop
+  followed and the control flipped to match, and the reverse (stopped on the desktop, read
+  correctly on the phone) held too. This is what the shared intent latch exists for.
+- **A stopped node reads as stopped, not as a failure.** On both surfaces — the desktop no
+  longer shows a red error card for a deliberate stop, and the phone shows a neutral pill.
+- **Pairing confirmation.** The 6-digit SAS is shown on its own screen after scanning and
+  matched the desktop's; confirming it completed the pairing and data followed.
 
 ## Not proven
 
 Say so rather than implying coverage:
 
-- **Balance.** The merging code was never wired to `/v1/status` (fixed, not yet observed
-  working). It needs `node_remote` running inside Basecamp *beside* the node: the wallet
-  RPCs are instance-bound and only answer in the `blockchain_module` that is actually
-  running the node, so this cannot be exercised in a headless harness.
 - **Blend `Inactive`.** The Bootstrapping case now reports Inactive rather than Unknown,
   following 1-click. Deployed, not yet seen on screen.
-- **Balance.** Now cached off the request path; the figure itself still has not been
-  observed on the phone.
 - **Three notification events** — Bootstrapping, Balance changed, Block proposed — are wired
   but have never fired live.
 - **The honest-error table** is a faithful port of `logos_node_1click`'s mapping but has not
@@ -52,13 +55,37 @@ Say so rather than implying coverage:
   and the crash was at +80s, and `refreshBalance()` is the only code making SYNCHRONOUS
   blockchain_module IPC from a timer — while `onNewBlock` was firing continuously. A sync
   IPC call runs a nested event loop, so a block callback can land inside one.
-  Mitigated with a re-entrancy guard and a 30s interval; **not proven fixed**, because the
-  backtrace was raw addresses with no symbols and no core dump was kept.
+  Since then the actual defect class was found and fixed in two places: the balance strings
+  and `BlockStore` were both unguarded containers shared between the HTTP handler thread and
+  the module's timers, and both now hold a `QMutex`. **Still not proven fixed** — no crash
+  has been seen since, but nobody has run the soak that would exercise it (node in catch-up,
+  phone polling `/v1/blocks`, 5+ minutes). Absence of a crash is not evidence; a previous
+  mitigation in this same area was called a fix and then crashed again 77s later.
   The pane now says "Node Remote stopped responding" instead of silently reverting to the
   Show QR button, which is how this presented and why it took a session to notice.
   To reproduce: pair, start a node that needs IBD, leave the pane open ~90s.
 - **Doze survival.** How long the foreground service keeps Tor alive under aggressive
   battery management is unmeasured.
+
+## Proven headlessly
+
+Not hardware proof, but not inference either — these run against a real tor and a real
+onion, with no phone involved:
+
+- **A pairing survives.** `pairing_stability.sh` 10/10. The key one: once a device has
+  actually authenticated, issuing a new code is REFUSED and the on-disk key is compared
+  before and after to prove it did not move. This is a real field failure — a poll timer
+  rotated the key out from under a paired phone, and because an un-authorized tor client is
+  indistinguishable from no client, nothing reported an error at either end.
+- **Revocation is not merely token-deep.** A revoked key gets `000` — no response at all —
+  not a `401`. The distinction matters: a `401` confirms the onion exists and is up.
+- **Pairing republishes in 2–4s**, because adding a client sends tor a SIGHUP instead of
+  restarting it. A restart cost 2m20s of unreachable onion, during which the app showed
+  "Connected" and no data.
+- **The state machine.** `lifecycle_test.sh` 4/4 covers a stale fatal log on a stopped node,
+  a real error, a replay with its block count, and a quiet start.
+- Also green: `pairing_e2e.sh` 5/5, `headless_test.sh` 11/11 (1 skipped by design),
+  `NodeStateTest` 7/7.
 
 ## Manual smoke test
 
@@ -84,4 +111,8 @@ Say so rather than implying coverage:
   status should not claim the node stopped, because you don't know that.
 - **Restart Basecamp while paired.** The phone should keep working without re-pairing — the
   bearer token is persisted for exactly this.
+- **Pair, then ask the desktop for another code.** It should refuse while your phone is
+  paired, and say so. To move to a different phone: Unpair first, then Pair.
+- **Watch how long pairing takes.** From confirming the code to seeing data should be
+  seconds. If it sits on "Connecting…" for a minute, that is a regression worth reporting.
 - **Read the privacy page** and tell me if any claim there overstates what you observe.
