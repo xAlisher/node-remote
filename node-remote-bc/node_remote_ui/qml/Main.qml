@@ -5,7 +5,8 @@ import QtQuick.Layouts
 // ─────────────────────────────────────────────────────────────────────────────
 // Node Remote — pair a phone with this node over a Tor onion service.
 //
-// Flow: Show QR  →  (onion publishes, ~30-90s)  →  QR + 6-digit code  →  paired
+// Flow: Pair  →  (onion publishes; seconds when warm, longer on a first cold start)
+//       →  QR + 6-digit code  →  phone scans and confirms  →  paired
 //       →  Disconnect (revokes the device; the onion stops answering it)
 //
 // Everything goes through node_remote via logos.callModule. Results are
@@ -108,6 +109,16 @@ Item {
     // claimed paired with no way back. That trap is CLOSED at the module now: revokeClient()
     // removes last_seen and calls forgetLastAuthed() when the final client goes, so
     // everConnected drops with the key. Verified before restoring this.
+    // `ready` is instantaneous and DIPS on every SIGHUP: minting a code makes tor re-read
+    // authorized_clients, which drops readiness for the 2-4s the descriptor takes to
+    // republish. Gating the QR on it made the code vanish and pop back in right after the
+    // user pressed Pair.
+    //
+    // What the gate actually wants to prevent is showing a code for an onion that has NEVER
+    // published — scanning that lands in a window where nothing is reachable. Once it has
+    // published once, the service is up and a re-mint only propagates a new revision; the
+    // phone retries across that by itself. So latch it.
+    property bool everReady: false
     readonly property bool hasKey: root.clients.length > 0
     readonly property bool paired: root.everConnected
 
@@ -139,6 +150,7 @@ Item {
     function refresh() {
         var info = parse(logos.callModule("node_remote", "getRemoteInfo", []));
         root.ready     = info.ready === true;
+        if (info.ready === true) root.everReady = true;
         root.onion     = info.onion || "";
         root.clients   = info.clients || [];
         root.connected     = info.connected === true;
@@ -261,6 +273,7 @@ Item {
             logos.callModule("node_remote", "revokeClient", [root.clients[i]])
         logos.callModule("node_remote", "stopRemote", [])
         root.pairUri = ""; root.sas = ""; root.token = ""; root.onion = ""; root.ready = false
+        root.everReady = false   // the service is stopping: the next code waits for a real publish again
         root.expiresAt = 0; root.secsLeft = 0
         root.connected = false
         root.note = "Unpaired. The onion no longer answers that device."
@@ -409,9 +422,14 @@ Item {
                     RowLayout {
                         Layout.fillWidth: true
                         Label {
+                            // FOUR states here, not three: a key can outlive its code. The
+                            // QR lives only in memory, so a Basecamp restart leaves the key
+                            // on disk with nothing to scan — and "Pairing — scan the code"
+                            // with no code visible is simply false.
                             text: root.paired ? "Paired"
-                                  : (root.hasKey ? "Pairing — scan the code"
-                                                 : "2. Pair your phone")
+                                  : (root.pairUri !== "" ? "Pairing — scan the code"
+                                  : (root.hasKey ? "Pairing unfinished"
+                                                 : "2. Pair your phone"))
                             color: root.textCol
                             font.pixelSize: 15; font.bold: true
                             Layout.fillWidth: true
@@ -421,6 +439,15 @@ Item {
                             visible: root.busy
                             implicitWidth: 22; implicitHeight: 22
                         }
+                    }
+
+                    // The orphaned-key state needs saying out loud, or the pane is a header
+                    // and a lone Unpair button with no explanation of what went wrong.
+                    Label {
+                        visible: !root.paired && root.hasKey && root.pairUri === ""
+                        text: "A code was issued but never scanned. Press Pair for a new one."
+                        color: root.textDim; font.pixelSize: 12
+                        Layout.fillWidth: true; wrapMode: Text.WordWrap
                     }
 
                     // CONNECTION is a separate line from PAIRING, because they are separate
@@ -437,6 +464,25 @@ Item {
                         color: root.connected ? root.success : root.textDim
                         font.pixelSize: 13
                         Layout.fillWidth: true
+                    }
+
+                    // Say how long the wait is, BEFORE it feels broken. A Basecamp restart
+                    // restarts tor, so the descriptor has to republish and the phone has to
+                    // find it on its next poll — about a minute in practice. Twice now that
+                    // silence has been read as a failure and the wait abandoned seconds
+                    // before data arrived, so the honest fix is to state the number rather
+                    // than to keep making it faster.
+                    //
+                    // Only while genuinely waiting: it disappears the moment data arrives,
+                    // and it never appears at all when the reconnect is quick.
+                    Label {
+                        visible: root.paired && !root.connected
+                        text: "Your phone reconnects on its own. After Basecamp restarts "
+                              + "this usually takes about a minute."
+                        color: root.textDim
+                        font.pixelSize: 12
+                        Layout.fillWidth: true
+                        wrapMode: Text.WordWrap
                     }
 
                     // The module is gone. Say so instead of showing a pairing flow that
@@ -471,7 +517,7 @@ Item {
                     Label {
                         // Suppressed while `note` is set: startRemote() already puts its own
                         // "publishing" line up, and two of them at once reads as a stutter.
-                        visible: root.pairUri !== "" && !root.ready && !root.connected
+                        visible: root.pairUri !== "" && !root.everReady && !root.connected
                                  && root.note === ""
                         text: "Publishing your onion address — the code appears in a moment."
                         color: root.textDim; font.pixelSize: 12
@@ -531,9 +577,16 @@ Item {
                         // key is written the moment the QR is drawn, so `paired` is already
                         // true while the code is on screen — without it an expired code would
                         // leave no way to mint another.
-                        visible: !root.moduleDead && !root.busy
-                                 && (!root.hasKey
-                                     || (root.pairUri !== "" && root.secsLeft === 0))
+                        // Keyed on "is there a LIVE code", not on "does a key exist". Keying
+                        // it on hasKey hid the button after a restart: the key persists on
+                        // disk but the code does not, so the pane offered Unpair and nothing
+                        // else for a pairing that had never completed. The module accepts a
+                        // re-mint here (it only refuses once a device has really
+                        // authenticated — tests/pairing_stability.sh S3), so the button is
+                        // honest. Hidden once `paired`: then a re-mint WOULD cut off a live
+                        // phone, and Unpair is the way through.
+                        visible: !root.moduleDead && !root.busy && !root.paired
+                                 && (root.pairUri === "" || root.secsLeft === 0)
                         // "Pair" is now an explicit action rather than something the pane
                         // infers. "New code" only while a code is on screen and has expired.
                         text: root.pairUri === "" ? "Pair" : "New code"
@@ -562,14 +615,16 @@ Item {
                         //
                         // The code stays up until a phone actually authenticates, which is
                         // the only event that means the pairing WORKED.
-                        // ALSO gated on `ready`. beginPairing() calls reload(), which
-                        // RESTARTS tor so it picks up the new authorized_clients entry — and
-                        // a restarted onion needs ~30-60s to republish its descriptor. The QR
-                        // used to appear the instant the key was minted, so every scan landed
-                        // in the window where the onion is unreachable; the phone then failed
-                        // with "SOCKS server general failure", and with a 90s connect timeout
-                        // it looked like nothing was happening at all.
-                        visible: root.pairUri !== "" && !root.connected && root.ready
+                        // Gated on everReady (has the onion EVER published), not on the
+                        // instantaneous `ready`. The original problem was showing a code for
+                        // an onion that had never published: every scan landed in a window
+                        // where nothing was reachable. everReady still prevents that.
+                        //
+                        // `ready` itself is wrong here because it DIPS on every re-mint —
+                        // beginPairing sends tor a SIGHUP and readiness drops for the 2-4s
+                        // the new descriptor takes to propagate. Gating on it made the QR
+                        // vanish and pop back in immediately after pressing Pair.
+                        visible: root.pairUri !== "" && !root.connected && root.everReady
                         Layout.fillWidth: true
                         spacing: 10
 
@@ -578,10 +633,14 @@ Item {
                             frameSize: 0    // auto
                             // An expired code still scans — dim it so it reads as dead.
                             opacity: root.secsLeft > 0 ? 1.0 : 0.35
+                            // Opacity only. Animating height inside a ColumnLayout does not
+                            // work: the layout owns `height` and overwrites it, so only
+                            // implicitHeight is respected.
+                            Behavior on opacity { NumberAnimation { duration: 220 } }
                             title: "Scan with Node Remote"
                             description: root.secsLeft > 0
                                          ? "Expires in " + root.secsLeft + "s"
-                                         : "Expired — press Show QR for a new code"
+                                         : "Expired — press New code below"
                             payload: root.pairUri
                             cardBg: root.surface2
                             titleColor: root.textCol
