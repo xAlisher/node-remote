@@ -45,8 +45,10 @@ class MonitorService : Service() {
         val (onion, ca) = p
 
         TorClient.start(this) { Log.i(TAG, it) }
-        var waited = 0
-        while (TorClient.socksPort == 0 && waited < 180) { delay(1000); waited++ }
+        // Bootstrap, not just the SOCKS port — the background poller had the same bug as
+        // connect(), so its first polls were guaranteed to fail and could fire a spurious
+        // "can't reach your node" notification for a link that was merely still starting.
+        TorClient.awaitReady()
         TorClient.addClientAuth(onion, ca)
             .onFailure { Log.e(TAG, "client auth failed", it) }
 

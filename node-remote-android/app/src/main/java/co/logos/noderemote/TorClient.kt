@@ -18,6 +18,7 @@ import io.matthewnelson.kmp.tor.runtime.core.util.executeAsync
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import okhttp3.OkHttpClient
 import okhttp3.Request
@@ -104,6 +105,31 @@ object TorClient {
     }
 
     /**
+     * Suspend until tor has actually BOOTSTRAPPED, not merely opened its SOCKS port.
+     *
+     * These are ten to forty seconds apart, and the gap was the whole bug. The SOCKS
+     * listener binds within a second or two of the process starting, so waiting on
+     * `socksPort != 0` returns almost immediately — while tor still has no circuits. Every
+     * caller then declared itself connected and began polling into a tor that could not
+     * carry the request, producing "SOCKS server general failure" and then, once tor began
+     * trying in earnest, a connect that simply hung until the timeout.
+     *
+     * RuntimeEvent.READY is the real signal and was already being observed into `isReady`;
+     * nothing consumed it.
+     *
+     * Returns false on timeout so the caller can say so rather than poll into the void.
+     */
+    suspend fun awaitReady(timeoutSec: Int = 180): Boolean {
+        var waited = 0
+        // The SOCKS port is still a prerequisite — without it there is nothing to proxy
+        // through even once bootstrap completes.
+        while ((socksPort == 0 || !isReady) && waited < timeoutSec) {
+            delay(1000); waited++
+        }
+        return socksPort != 0 && isReady
+    }
+
+    /**
      * Register the client-auth key from a pairing QR. Until this succeeds, requests to
      * the onion fail with a SOCKS error — tor cannot even decrypt the descriptor.
      *
@@ -131,14 +157,21 @@ object TorClient {
         runCatching { rt.executeAsync(TorCmd.OnionClientAuth.Remove(addr)) }
 
         rt.executeAsync(TorCmd.OnionClientAuth.Add(addr, key))
+        Log.i(TAG, "client auth installed for $onionHost")
         Unit
     }
 
     /** OkHttp routed through tor's SOCKS. socks5h semantics: tor resolves the .onion. */
     fun http(): OkHttpClient = OkHttpClient.Builder()
         .proxy(Proxy(Proxy.Type.SOCKS, InetSocketAddress("127.0.0.1", socksPort)))
-        .connectTimeout(90, TimeUnit.SECONDS)
-        .readTimeout(90, TimeUnit.SECONDS)
+        // 25s, not 90. A connect that fails because the onion's descriptor is not published
+        // yet blocks for the WHOLE timeout, so a 90s value turned a 15s poll cadence into
+        // one attempt every 105 seconds — the app looked dead while it was simply waiting.
+        // A Tor circuit to a published onion completes in a few seconds; 25 is generous.
+        .connectTimeout(25, TimeUnit.SECONDS)
+        // Reads stay long: the desktop's /v1/status can legitimately take seconds when the
+        // node is slow, and cutting a live response short would be worse than waiting.
+        .readTimeout(60, TimeUnit.SECONDS)
         .build()
 
     fun get(url: String, bearer: String?): Result<String> = runCatching {

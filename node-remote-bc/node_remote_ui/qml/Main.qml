@@ -392,6 +392,15 @@ Item {
                         }
                     }
 
+                    // Say what the wait is for, rather than showing an empty gap between
+                    // pressing Pair and the code appearing.
+                    Label {
+                        visible: root.pairUri !== "" && !root.ready && !root.connected
+                        text: "Publishing your onion address — the code appears in a moment."
+                        color: root.textDim; font.pixelSize: 12
+                        Layout.fillWidth: true; wrapMode: Text.WordWrap
+                    }
+
                     Label {
                         visible: root.note !== "" && !root.moduleDead
                         text: root.note
@@ -476,7 +485,14 @@ Item {
                         //
                         // The code stays up until a phone actually authenticates, which is
                         // the only event that means the pairing WORKED.
-                        visible: root.pairUri !== "" && !root.connected
+                        // ALSO gated on `ready`. beginPairing() calls reload(), which
+                        // RESTARTS tor so it picks up the new authorized_clients entry — and
+                        // a restarted onion needs ~30-60s to republish its descriptor. The QR
+                        // used to appear the instant the key was minted, so every scan landed
+                        // in the window where the onion is unreachable; the phone then failed
+                        // with "SOCKS server general failure", and with a 90s connect timeout
+                        // it looked like nothing was happening at all.
+                        visible: root.pairUri !== "" && !root.connected && root.ready
                         Layout.fillWidth: true
                         spacing: 10
 

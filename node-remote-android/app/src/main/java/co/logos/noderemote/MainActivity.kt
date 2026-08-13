@@ -147,15 +147,16 @@ class MainActivity : ComponentActivity() {
             if (!hasInternet()) { link = Link.NO_INTERNET; return }
             link = Link.CONNECTING
             TorClient.start(this@MainActivity) { android.util.Log.i(TAG, it) }
-            var w = 0
-            while (TorClient.socksPort == 0 && w < 180) { delay(1000); w++ }
-            if (TorClient.socksPort == 0) {
+            // Wait for BOOTSTRAP, not for the SOCKS port. See TorClient.awaitReady.
+            if (!TorClient.awaitReady()) {
                 link = if (hasInternet()) Link.CONNECTING else Link.NO_INTERNET
                 note = "Tor is taking longer than usual to start"
                 return
             }
+            var authOk = true
             TorClient.addClientAuth(p.first, p.second)
-                .onFailure { note = "client auth failed: ${it.message}" }
+                .onFailure { authOk = false; note = "client auth failed: ${it.message}" }
+            if (!authOk) { link = Link.CONNECTING; return }
             note = ""
             link = Link.CONNECTED
             // Only now — a watcher started before the circuit is up would spend its first
