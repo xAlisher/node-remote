@@ -2,6 +2,7 @@
 
 #include <QMutex>
 #include <QString>
+#include <QStringList>
 #include <string>
 #include "logos_module_context.h"
 
@@ -124,6 +125,11 @@ private:
     std::string tokenPath() const;
     void        persistToken(const std::string& token) const;
     std::string loadToken() const;
+
+    /// The identity-bearing values in a user_config.yaml, in file order — funding_pk,
+    /// non_ephemeral_signing_key_id, secret_key_kms_id. Used to report whether a
+    /// regenerate preserved or re-minted the node's identity.
+    static QStringList configIdentityKeys(const QString& path);
 
     // Last-seen is persisted so a restart does not forget an existing pairing. Throttled:
     // this is written from the request path.

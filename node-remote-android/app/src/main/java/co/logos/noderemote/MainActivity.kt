@@ -238,10 +238,21 @@ class MainActivity : ComponentActivity() {
                             // the REAL backup path it just wrote, and that is precisely what
                             // you need if the new config turns out wrong. Telling someone a
                             // backup exists without naming it is not much better than silence.
-                            o.optBoolean("ok", false) && path == "regenerate" ->
-                                o.optString("backup").takeIf { it.isNotEmpty() }
-                                    ?.let { "Config regenerated. Previous file saved as $it" }
-                                    ?: ""
+                            o.optBoolean("ok", false) && path == "regenerate" -> {
+                                val bak = o.optString("backup")
+                                // The module now reports whether the node's IDENTITY values
+                                // (funding_pk, signing key ids) survived the regenerate.
+                                // If they moved, that is the single most important thing to
+                                // say: it is the leader identity, and the backup is the only
+                                // way back.
+                                val changed = o.optBoolean("identityChanged", false)
+                                buildString {
+                                    append(if (changed)
+                                        "Config regenerated — YOUR NODE IDENTITY CHANGED. "
+                                    else "Config regenerated. ")
+                                    if (bak.isNotEmpty()) append("Previous file saved as $bak")
+                                }
+                            }
                             // Trust STRUCTURE, not phrasing. The module returns ok:true for a
                             // real stop/start AND for the idempotent already_stopped/
                             // already_running cases, so a satisfied intent says nothing.
@@ -249,6 +260,12 @@ class MainActivity : ComponentActivity() {
                             // Structured idempotent codes, in case a build returns ok:false
                             // with a code (belt and suspenders).
                             code == "already_stopped" || code == "already_running" -> ""
+                            // Destructive actions refuse when the node is not fully stopped
+                            // — including the replaying/starting window, which "reachable"
+                            // alone cannot see. Say so plainly; this is a refusal to protect
+                            // the database, not a failure.
+                            code == "node_not_stopped" || code == "node_running" ->
+                                err.ifEmpty { "Stop the node first." }
                             // Fallback for OLDER desktop modules that still reply ok:false
                             // with only an English message and no code.
                             isAlreadyInDesiredState(path, err) -> ""

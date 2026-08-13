@@ -347,11 +347,35 @@ std::string NodeRemoteImpl::wipeDatabase()
     //  2. It removes ONLY db/state/logs — keystore.yaml and user_config.yaml stay, so
     //     the wallet keys and settings survive. The docs tell operators to delete the
     //     whole module_data dir, which loses their keys.
+    // GUARD: refuse unless the node is BOTH deliberately stopped AND not answering.
+    //
+    // `reachable` alone was not enough, and the gap is the dangerous one: a node that is
+    // REPLAYING has not brought its API up, so reachable is false — while the process is
+    // very much alive with open RocksDB handles. Deleting db/ underneath it is how you
+    // corrupt a database. logos_node_1click's resetChainState() refuses on
+    // Running || Starting || Stopping; this was lifted from it and narrowed to one
+    // condition, losing exactly that window.
+    //
+    // Intent is the missing half: it says whether the user wants the node up, which covers
+    // starting and replaying, neither of which is observable through `reachable`.
+    //
+    // The Android UI already greys the button (nodeRunning = reachable || starting ||
+    // recovering) but that is CLIENT-side: this route is reachable over the onion with a
+    // token, an older app build has no such gate, and a retry can land after the state
+    // changed. A destructive action must refuse on its own.
     const QByteArray statusRaw = g_probe->statusJson();
     const QJsonObject st = QJsonDocument::fromJson(statusRaw).object();
     if (st.value("reachable").toBool()) {
         r["ok"] = false;
+        r["code"] = "node_running";
         r["error"] = "Stop the node before wiping the database.";
+        return dump(r);
+    }
+    if (g_probe->readIntent() != NodeProbe::Intent::Stopped) {
+        r["ok"] = false;
+        r["code"] = "node_not_stopped";
+        r["error"] = "The node is starting or recovering. Stop it first — wiping now would "
+                     "delete the database out from under a running node.";
         return dump(r);
     }
 
@@ -375,6 +399,12 @@ std::string NodeRemoteImpl::wipeDatabase()
         r["error"] = QStringLiteral("Could not remove: %1").arg(failed.join(", "));
         return dump(r);
     }
+    // Record the resulting state. logos_node_1click does the equivalent (setStatus(NotStarted)).
+    // Without it the intent stayed whatever it was, and since the wipe just deleted logs/
+    // there is no error to scrape either — so statusJson() reported "Starting" and the phone
+    // showed "Starting…" indefinitely for a node that was never started.
+    g_probe->writeIntent(NodeProbe::Intent::Stopped);
+
     r["ok"] = true;
     r["removed"] = removed.join(", ");
     return dump(r);
@@ -384,6 +414,17 @@ std::string NodeRemoteImpl::regenerateConfig(const std::string& initialPeers)
 {
     QJsonObject r;
     if (!isContextReady()) { r["ok"] = false; r["error"] = "module not ready"; return dump(r); }
+
+    // Same guard as wipeDatabase(), and for the same reason: this rewrites the file the node
+    // reads its identity from. It previously had NO state check at all — server-side it
+    // would happily rewrite the config of a running node.
+    const QJsonObject st = QJsonDocument::fromJson(g_probe->statusJson()).object();
+    if (st.value("reachable").toBool() || g_probe->readIntent() != NodeProbe::Intent::Stopped) {
+        r["ok"] = false;
+        r["code"] = "node_not_stopped";
+        r["error"] = "Stop the node before regenerating its config.";
+        return dump(r);
+    }
 
     const QString cfg = g_probe->userConfigPath();
     if (cfg.isEmpty()) {
@@ -415,8 +456,52 @@ std::string NodeRemoteImpl::regenerateConfig(const std::string& initialPeers)
 
     r["ok"] = res.success;
     r["backup"] = backup;
-    if (!res.success) r["error"] = QString::fromStdString(res.error);
+    if (!res.success) {
+        r["error"] = QString::fromStdString(res.error);
+        return dump(r);
+    }
+
+    // REPORT WHAT MOVED. generate_user_config only inserts the keys it is GIVEN, and we pass
+    // two — so everything the operator customised reverts to module defaults. The most
+    // consequential of those is the leader identity: user_config.yaml carries
+    // cryptarchia.leader…funding_pk, and whether the module preserves or re-mints it is not
+    // knowable from here. Returning the before/after lets the caller SEE it rather than
+    // trust a comment, and the backup path is right there if it changed.
+    const QStringList before = configIdentityKeys(backup);
+    const QStringList after  = configIdentityKeys(cfg);
+    if (before != after) {
+        r["identityChanged"] = true;
+        r["identityBefore"] = before.join(", ");
+        r["identityAfter"] = after.join(", ");
+    } else if (!before.isEmpty()) {
+        r["identityChanged"] = false;
+    }
     return dump(r);
+}
+
+// The identity-bearing values in user_config.yaml, in file order. Deliberately a plain
+// line scan and not a YAML parse: the module owns this file's schema, we only need to know
+// whether these specific values survived a regenerate, and a dependency-free comparison
+// cannot itself break the regenerate path.
+QStringList NodeRemoteImpl::configIdentityKeys(const QString& path)
+{
+    static const QStringList kKeys{QStringLiteral("funding_pk"),
+                                   QStringLiteral("non_ephemeral_signing_key_id"),
+                                   QStringLiteral("secret_key_kms_id")};
+    QStringList out;
+    QFile f(path);
+    if (!f.open(QIODevice::ReadOnly | QIODevice::Text)) return out;
+    const QStringList lines = QString::fromUtf8(f.readAll()).split(QLatin1Char('\n'));
+    f.close();
+    for (const QString& ln : lines) {
+        for (const QString& k : kKeys) {
+            const int i = ln.indexOf(k + QLatin1Char(':'));
+            if (i < 0) continue;
+            out << ln.mid(i).trimmed();
+            break;
+        }
+    }
+    return out;
 }
 
 std::string NodeRemoteImpl::getBlocks()
