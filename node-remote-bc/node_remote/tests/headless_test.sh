@@ -34,6 +34,23 @@ skp()  { echo "  SKIP  $*"; skip=$((skip+1)); }
 [ -f "$SO" ]        || { echo "no plugin at $SO — run: nix build .#packages.x86_64-linux.default"; exit 1; }
 [ -n "$LOGOSCORE" ] || { echo "logoscore not found"; exit 1; }
 
+# ISOLATE THE MODULE'S DATA DIR. The module resolves state through
+# QStandardPaths::AppDataLocation, which honours XDG_DATA_HOME. Without this every suite
+# here runs against the MACHINE'S OWN node_remote state -- it mints pairings, revokes
+# clients and persists bearer tokens in the same directory a real paired phone depends on.
+# Two concrete consequences already observed: a leftover "pixel10" client from an earlier
+# run, and a persisted device_token that silently overrode NODE_REMOTE_TOKEN and turned
+# every authorized request in this file into a 401.
+#
+# Stable path, not mktemp: tor's DataDirectory hangs off this, and a fresh one per run
+# forces a cold consensus fetch that looks exactly like an onion that never publishes.
+export XDG_DATA_HOME="${NR_TEST_HOME:-$HOME/.cache/node_remote-test-home}"
+mkdir -p "$XDG_DATA_HOME"
+# Service state is per-run; only tor's cache is shared.
+rm -rf "$XDG_DATA_HOME"/*/node_remote/hs \
+       "$XDG_DATA_HOME"/*/node_remote/last_seen \
+       "$XDG_DATA_HOME"/*/node_remote/device_token 2>/dev/null
+
 export LOGOSCORE_CONFIG_DIR=$(mktemp -d)
 MDIR=$(mktemp -d)
 export NODE_REMOTE_TOKEN="tok-$(head -c12 /dev/urandom | od -An -tx1 | tr -d ' \n')"
