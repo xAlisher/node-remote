@@ -46,6 +46,18 @@ Item {
     readonly property string githubUrl: "https://github.com/xAlisher/node-remote/releases/latest"
     property int sourceTab: 0        // 0 = F-Droid, 1 = GitHub
 
+    // "Get the app" matters once. After the first successful pairing it is just noise above
+    // the thing you actually came for, so it collapses itself — once. The latch means a user
+    // who re-opens it keeps it open; auto-collapsing on every pairing would fight them.
+    property bool appOpen: true
+    property bool appAutoCollapsed: false
+    onPairedChanged: {
+        if (root.paired && !root.appAutoCollapsed) {
+            root.appOpen = false
+            root.appAutoCollapsed = true
+        }
+    }
+
     readonly property string sourceUrl:  sourceTab === 0 ? fdroidUrl : githubUrl
     readonly property string sourceHint: sourceTab === 0
         ? "Scan in the F-Droid app to add the repo, then install Node Remote. Updates arrive automatically."
@@ -227,10 +239,35 @@ Item {
                     anchors.margins: 14
                     spacing: 8
 
-                    Label {
-                        text: "1. Get Node Remote app"
-                        color: root.textCol; font.pixelSize: 15; font.bold: true
+                    // Disclosure header: the whole row toggles, not just the triangle —
+                    // a 12px hit target is a miss waiting to happen.
+                    RowLayout {
+                        Layout.fillWidth: true
+                        spacing: 8
+                        Label {
+                            text: root.appOpen ? "\u25BE" : "\u25B8"   // ▾ open, ▸ collapsed
+                            color: root.textDim
+                            font.pixelSize: 13
+                        }
+                        Label {
+                            text: "1. Get Node Remote app"
+                            color: root.textCol; font.pixelSize: 15; font.bold: true
+                            Layout.fillWidth: true
+                        }
+                        MouseArea {
+                            anchors.fill: parent
+                            cursorShape: Qt.PointingHandCursor
+                            onClicked: root.appOpen = !root.appOpen
+                        }
                     }
+
+                    // The body. ONE wrapper with visible bound to appOpen, so the parent
+                    // Rectangle's implicitHeight (appCol.implicitHeight + 28) shrinks with
+                    // it — hiding children individually would leave the card its full height.
+                    ColumnLayout {
+                    visible: root.appOpen
+                    Layout.fillWidth: true
+                    spacing: 8
 
                     // Logos tabs — label + sliding underline, no button chrome. Matches
                     // the design system's LogosTabBar, which is what the 1-click node view
@@ -279,6 +316,7 @@ Item {
                         color: root.textDim; font.pixelSize: 11; font.italic: true
                         Layout.fillWidth: true; wrapMode: Text.WordWrap
                     }
+                    }   // end collapsible body
                 }
             }
 
@@ -370,10 +408,9 @@ Item {
                             // The module cannot see the app's state — the phone pushes no
                             // disconnect — so say when we last HEARD from it rather than
                             // implying a live link we cannot observe.
+                            // Device + address only. "last seen" lives on the connection
+                            // line above; printing it twice made one fact look like two.
                             text: root.clients.join(", ") +
-                                  (root.connected ? "" : (root.lastSeenSecs >= 0
-                                       ? "  ·  last seen " + root.seenAgo()
-                                       : "  ·  never connected")) +
                                   (root.onion ? "  ·  " + root.onion.substring(0, 12) + "…onion" : "")
                             color: root.textDim; font.pixelSize: 12
                             Layout.fillWidth: true; elide: Text.ElideRight
@@ -401,11 +438,16 @@ Item {
                     Button {
                         // Also shown once the code expires — otherwise the pane strands the
                         // user with a dead QR and no way to ask for another.
-                        // Visible while paired as well: pairing another device, or replacing
-                        // a stale one, both need this. Hiding it on `paired` is what left the
-                        // pane with no way out of a half-revoked pairing.
+                        // Pair and Unpair are mutually exclusive: showing both at once asks
+                        // the user to work out which applies. Re-pairing is Unpair then Pair.
+                        //
+                        // The second clause keeps "New code" reachable DURING a pairing: the
+                        // key is written the moment the QR is drawn, so `paired` is already
+                        // true while the code is on screen — without it an expired code would
+                        // leave no way to mint another.
                         visible: !root.moduleDead && !root.busy
-                                 && (root.pairUri === "" || root.secsLeft === 0)
+                                 && (!root.paired
+                                     || (root.pairUri !== "" && root.secsLeft === 0))
                         // "Pair" is now an explicit action rather than something the pane
                         // infers. "New code" only while a code is on screen and has expired.
                         text: root.pairUri === "" ? "Pair" : "New code"
