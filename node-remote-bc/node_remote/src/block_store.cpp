@@ -84,16 +84,31 @@ void BlockStore::append(const QString& tsIso, const QString& rawPayload)
         e.rawJson = rawPayload;
     }
 
+    // The parse above ran on LOCALS. Only the list mutation needs the lock, so a slow
+    // double-JSON parse never blocks a reader.
+    QMutexLocker lk(&m_mu);
     m_blocks.prepend(e);                       // newest first, like BlockModel
     while (m_blocks.size() > kMax) m_blocks.removeLast();
 }
 
 QByteArray BlockStore::json(int limit) const
 {
+    // Snapshot under the lock, serialise outside it. Copying the entries takes atomic
+    // refcount increments on their QStrings while the writer is excluded, so the snapshot
+    // keeps its own valid references even if append() trims the originals afterwards.
+    // Serialising under the lock would work too, but would stall the block callback for
+    // the whole of a 100-entry JSON build.
+    QList<BlockEntry> snap;
+    {
+        QMutexLocker lk(&m_mu);
+        const int n = limit > 0 ? qMin(limit, m_blocks.size()) : m_blocks.size();
+        snap.reserve(n);
+        for (int i = 0; i < n; ++i) snap.append(m_blocks.at(i));
+    }
+
     QJsonArray arr;
-    const int n = limit > 0 ? qMin(limit, m_blocks.size()) : m_blocks.size();
-    for (int i = 0; i < n; ++i) {
-        const BlockEntry& e = m_blocks.at(i);
+    for (int i = 0; i < snap.size(); ++i) {
+        const BlockEntry& e = snap.at(i);
         QJsonArray txs;
         for (const QString& t : e.transactions) txs.append(t);
         arr.append(QJsonObject{
