@@ -192,6 +192,15 @@ Item {
             for (var i = 0; i < root.clients.length; ++i)
                 logos.callModule("node_remote", "revokeClient", [root.clients[i]])
             root.clients = []
+            // Revoking RESTARTS tor — deliberately, so the revoked device loses its
+            // circuits rather than merely being turned away by the token. The onion is
+            // therefore not ready, and pairing right now returns "onion not ready".
+            // Hand off to the poll loop: `paired` is false and `busy` is true, so it mints
+            // the code the moment the descriptor republishes.
+            root.busy = true
+            root.note = "Unpaired. Republishing your onion — a new code appears shortly."
+            refresh()
+            return
         }
         var p = parse(logos.callModule("node_remote", "beginPairing", ["phone"]))
         if (p.ok !== true) { root.note = p.error || "pairing failed"; root.busy = false; return }

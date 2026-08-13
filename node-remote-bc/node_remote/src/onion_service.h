@@ -59,7 +59,14 @@ public:
 
     // Restart tor so authorized_clients changes take effect. The .onion address is
     // persistent key material, so it survives — same address, new auth set.
-    QString reload();
+    /// Re-read authorized_clients. `hard=false` sends SIGHUP: tor picks up the new client
+    /// set while keeping its circuits, introduction points and published descriptor, so a
+    /// pairing republishes in seconds instead of after a cold restart.
+    ///
+    /// `hard=true` fully restarts tor. REQUIRED for revocation: a HUP leaves the revoked
+    /// client's cached descriptor and live intro points intact, so it can still reach the
+    /// service and is stopped only by the bearer token — which leaks that the onion exists.
+    QString reload(bool hard = false);
     QStringList authorizedClients() const;
 
     // Wipe the persistent HS key material → a brand-new .onion on next start.
@@ -84,6 +91,14 @@ private:
     QString   m_onion;
     QString   m_error;
     bool      m_ready = false;
+    /// Byte offset into hs.log from which a descriptor upload counts as "this publish".
+    /// Without it, a stale upload line from the previous publish satisfies the readiness
+    /// check and the service is announced reachable before the current descriptor exists.
+    qint64    m_hsLogMark = 0;
+    /// True while the current publish cycle followed a SIGHUP rather than a start. Tor is
+    /// already bootstrapped in that case, so the "Bootstrapped 100%" readiness fallback
+    /// would fire immediately and must be skipped.
+    bool      m_afterHup = false;
     int       m_ticks = 0;
     int       m_bootstrappedAt = 0;
     QTimer    m_poll;

@@ -61,10 +61,16 @@ void dieWithParent(QProcess* p)
 #endif
 }
 
-bool fileContains(const QString& path, const char* a, const char* b)
+// `fromOffset` scopes the search to what was written AFTER a known point. Without it,
+// "has the descriptor been uploaded?" is answered by a line from a PREVIOUS publish, and
+// the service is declared reachable while the current descriptor does not exist yet.
+bool fileContains(const QString& path, const char* a, const char* b, qint64 fromOffset = 0)
 {
     QFile f(path);
     if (!f.open(QIODevice::ReadOnly)) return false;
+    // A shrunken file means tor rotated or truncated it; the offset is meaningless, so
+    // fall back to reading the whole thing rather than seeking past the end.
+    if (fromOffset > 0 && fromOffset <= f.size()) f.seek(fromOffset);
     const QString s = QString::fromUtf8(f.readAll());
     f.close();
     return s.contains(QLatin1String(a), Qt::CaseInsensitive)
@@ -217,6 +223,11 @@ QString OnionService::start(quint16 localPort)
     m_error.clear();
     m_ticks = 0;
     m_bootstrappedAt = 0;
+    // A fresh start begins a new publish cycle, but hs.log is APPENDED to across runs —
+    // so the previous run's upload lines are still sitting there and would satisfy the
+    // readiness check immediately. Start counting from the end of what already exists.
+    m_hsLogMark = QFileInfo(m_runDir + "/hs.log").size();
+    m_afterHup = false;
     m_poll.start(2000);
     return QString();
 }
@@ -260,10 +271,15 @@ void OnionService::poll()
     if (m_onion.isEmpty() || m_ready) return;
 
     // Precise signal: the [rend]info log records the descriptor upload to the HSDirs.
-    bool ok = fileContains(m_runDir + "/hs.log", "upload", "descriptor");
+    bool ok = fileContains(m_runDir + "/hs.log", "upload", "descriptor", m_hsLogMark);
     // Fallback, robust to tor wording changes: once bootstrapped 100% the descriptor
     // publishes within tens of seconds — accept after a grace so a live onion is never missed.
-    if (!ok && fileContains(m_runDir + "/tor.log", "Bootstrapped 100%", nullptr)) {
+    // Skipped after a HUP: tor is ALREADY bootstrapped, so "Bootstrapped 100%" is always
+    // present and this fallback would declare readiness instantly — defeating the mark and
+    // re-announcing the onion before the new client's descriptor is up. On a fresh start it
+    // stays, as the guard against tor changing its log wording.
+    if (!ok && !m_afterHup
+        && fileContains(m_runDir + "/tor.log", "Bootstrapped 100%", nullptr)) {
         if (m_bootstrappedAt == 0) m_bootstrappedAt = m_ticks;
         if (m_ticks - m_bootstrappedAt >= 12) ok = true;   // ~24s after 100%
     }
@@ -309,11 +325,47 @@ bool OnionService::revokeClient(const QString& name)
     return removed;
 }
 
-QString OnionService::reload()
+QString OnionService::reload(bool hard)
 {
-    // Tor parses authorized_clients once, at startup. Changing the set therefore means
-    // restarting tor. The hidden-service KEYS live in a persistent dir, so the .onion
-    // address is unchanged across this — users keep their paired address.
+    // SIGHUP, not a restart. Tor re-reads its configuration on HUP, and that INCLUDES the
+    // onion service's authorized_clients directory — adding a client does not require
+    // taking the service down.
+    //
+    // The difference is the whole pairing experience. A restart destroys the descriptor
+    // and every introduction point, so the onion is unreachable until tor bootstraps and
+    // republishes from nothing: measured at 2m20s from minting a key to the phone's first
+    // successful request, with the app showing "Connected" and no data throughout. A HUP
+    // keeps the circuits and intro points alive and only re-uploads the descriptor with
+    // the new client set.
+    //
+    // The .onion address survives either way — the service keys live in a persistent dir.
+    // REVOCATION MUST BE HARD. A HUP makes tor re-read the client set, but it does NOT
+    // tear down the circuits a revoked client already holds: it keeps its cached
+    // descriptor and the live introduction points, so it can still REACH the service and
+    // is stopped only by the bearer token. Measured directly — the revoked key went from
+    // 000 (could not reach the onion at all) to 401 (reached it, rejected) the moment
+    // reload() started HUPing. 401 leaks that the service exists and is up, which is the
+    // property client auth is there to hide. A restart destroys those circuits and forces
+    // a descriptor the revoked key cannot decrypt.
+    if (!hard && m_tor && m_tor->state() == QProcess::Running) {
+        const qint64 pid = m_tor->processId();
+        if (pid > 0 && ::kill(static_cast<pid_t>(pid), SIGHUP) == 0) {
+            // The descriptor still has to be re-uploaded for the new client set, so mark
+            // where hs.log currently ends: readiness must be decided by an upload that
+            // happens AFTER this point, never by the one that published the old set.
+            m_hsLogMark = QFileInfo(m_runDir + "/hs.log").size();
+            m_afterHup = true;
+            m_ready = false;
+            m_bootstrappedAt = 0;
+            m_ticks = 0;
+            m_poll.start(2000);
+            qInfo() << "OnionService: SIGHUP — re-reading authorized_clients without a restart";
+            return QString();
+        }
+        qWarning() << "OnionService: SIGHUP failed, falling back to a full restart";
+    }
+
+    // Fallback: tor is not running, or the signal failed. A restart is slow but correct.
     const quint16 p = m_localPort;
     stop();
     return start(p);

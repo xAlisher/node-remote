@@ -158,7 +158,12 @@ class MainActivity : ComponentActivity() {
                 .onFailure { authOk = false; note = "client auth failed: ${it.message}" }
             if (!authOk) { link = Link.CONNECTING; return }
             note = ""
-            link = Link.CONNECTED
+            // CONNECTING, not CONNECTED. Installing a credential proves nothing about
+            // reachability — the descriptor may not be published yet, which is exactly the
+            // case right after pairing. refresh() promotes this to CONNECTED on the first
+            // request the desktop actually answers. Claiming it here is what put "Connected"
+            // on screen next to an empty node panel for two minutes.
+            link = Link.CONNECTING
             // Only now — a watcher started before the circuit is up would spend its first
             // polls failing and could fire a spurious "can't reach your node".
             syncWatcher()

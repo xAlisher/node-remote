@@ -879,6 +879,10 @@ std::string NodeRemoteImpl::revokeClient(const std::string& name)
 {
     QJsonObject r;
     r["ok"] = m_onion->revokeClient(QString::fromStdString(name));
+    // Hard reload: tor must drop the revoked client's circuits and republish a descriptor
+    // that key cannot decrypt. Without it the revocation is only as strong as the bearer
+    // token, and the onion stays reachable to the device that was just unpaired.
+    if (r["ok"].toBool()) m_onion->reload(/*hard=*/true);
     // Last device gone: drop the token and last-seen too, so the next launch does not
     // auto-start a surface for a device that can no longer reach it, and the pane offers
     // pairing rather than claiming a phone it revoked.

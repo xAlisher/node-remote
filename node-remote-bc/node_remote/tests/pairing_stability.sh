@@ -82,10 +82,15 @@ for _ in $(seq 1 20); do "$LOGOSCORE" status >/dev/null 2>&1 && break; sleep 1; 
 # beginPairing() restarts tor (reload() re-reads authorized_clients), so readiness is lost
 # after EVERY pairing and the descriptor must republish before anything can connect.
 wait_ready() {
+  local t0=$SECONDS
   for _ in $(seq 1 ${1:-60}); do
-    call getRemoteInfo | grep -q '"ready":true' && return 0
+    if call getRemoteInfo | grep -q '"ready":true'; then
+      REPUBLISH_SECS=$((SECONDS - t0))
+      return 0
+    fi
     sleep 2
   done
+  REPUBLISH_SECS=$((SECONDS - t0))
   return 1
 }
 
@@ -196,8 +201,19 @@ else
   bad "S5  _sealed.auth still present alongside a real client"
 fi
 
+# ── S6: republish after pairing is fast, i.e. reload() did not restart tor. ──────
+if [ "${REPUBLISH_SECS:-999}" -le 45 ]; then
+  ok "S6  onion republished ${REPUBLISH_SECS}s after pairing (SIGHUP, not a restart)"
+else
+  bad "S6  republish took ${REPUBLISH_SECS}s — reload() looks like a full tor restart"
+fi
+
 # ── S4: explicit revoke -> pair really does rotate. ──────────────────────────────
 call revokeClient phone >/dev/null 2>&1
+# Revocation restarts tor by design, so the onion must republish before a new code can be
+# issued. The pane models this by setting busy and letting its poll loop mint the code once
+# ready returns — an immediate revoke-then-pair fails with "onion not ready".
+wait_ready 120 || echo "  WARN  onion did not republish after revocation"
 P3=$(call beginPairing phone)
 KEY3=$(pubkey_of phone)
 wait_ready || echo "  WARN  onion did not republish after the rotation"
@@ -207,8 +223,12 @@ else
   bad "S4a rotation after revoke did not happen: $P3"
 fi
 CODE=$(fetch "$ONION" "$TOK2")
-if [ "$CODE" != "200" ]; then ok "S4b the old key no longer reaches the onion ($CODE)"
-else bad "S4b REVOKED key still has access"; fi
+# 000, not merely "not 200". A 401 means the revoked client still REACHED the service and
+# was turned away by the token — which confirms the onion exists and is up, the very thing
+# client auth hides. This assertion caught exactly that when reload() began HUPing.
+if [ "$CODE" = "000" ]; then ok "S4b revoked key cannot reach the onion at all (000)"
+elif [ "$CODE" = "200" ]; then bad "S4b REVOKED key still has full access"
+else bad "S4b revoked key still reached the service (got $CODE, want 000) — revocation is only token-deep"; fi
 
 rm -rf "$CDATA"
 echo
