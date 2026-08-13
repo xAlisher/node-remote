@@ -124,13 +124,38 @@ Covered by `pairing_stability.sh` (9/9) against a real client tor over a real on
 
 ## Interactions that are not obvious
 
-**Pairing invalidates readiness.** `beginPairing()` calls `reload()`, which restarts tor so
-it re-reads `authorized_clients` — and a restarted onion needs 30–60s to republish its
-descriptor. So:
+**Pairing invalidates readiness — but only briefly.** `beginPairing()` calls `reload()`,
+which sends **SIGHUP**. Tor re-reads an onion service's `authorized_clients` on HUP; it does
+not need a restart. The descriptor is re-uploaded for the new client set while circuits and
+introduction points stay alive: **2–4s**, versus the ~2m20s a full restart cost.
 
-- the QR must not be shown until `ready` is true again, or every scan lands in a window
-  where the onion is unreachable;
-- two pairings in a row cannot happen without waiting for republish in between.
+That number is the whole pairing experience. With a restart, the measured gap between
+minting a key and the phone's first successful request was 2m20s — during which nothing was
+wrong and everything looked wrong.
+
+Still true regardless:
+
+- the QR must not be shown until `ready` is true again, or a scan lands in the window where
+  the onion is unreachable;
+- readiness must be decided by a descriptor upload **after a recorded `hs.log` offset**.
+  Scanning the whole file matches the *previous* publish and announces the onion as
+  reachable before the current descriptor exists. The `Bootstrapped 100%` fallback is
+  skipped after a HUP for the same reason — tor is already bootstrapped, so it fires
+  instantly.
+
+**Revocation must be hard.** `reload(hard=true)` fully restarts tor. A HUP leaves the
+revoked client's cached descriptor and live intro points intact, so it can still *reach* the
+service and is stopped only by the bearer token. The revoked key went from `000` to `401`
+the moment `reload()` began HUPing — and a `401` confirms the onion exists and is up, which
+is exactly what client auth is there to hide. `pairing_stability.sh` S4b asserts `000`, not
+merely "not 200", and that assertion is what caught the weakening.
+
+Consequence: revoking restarts tor, so an immediate revoke→pair returns `onion not ready`.
+The pane sets `busy` and lets its poll loop mint the code once the descriptor is back.
+
+**`CONNECTED` on the phone means a request was answered.** Installing a client-auth
+credential proves nothing about reachability — least of all right after pairing. `connect()`
+sets `CONNECTING`; `refresh()` promotes on the first answered request.
 
 **The QR retires on success, not on expiry.** It used to stay on screen until the timer ran
 out even after the phone was through, which reads as failure and invites a re-scan of a
@@ -151,6 +176,10 @@ spent code.
 | Empty `authorized_clients` serves the onion publicly | `_sealed.auth` sentinel | `pairing_e2e.sh` P3 |
 | Unpaired client can reach the onion | client auth | `pairing_e2e.sh` P3 |
 | Phone polls before tor bootstraps | `awaitReady()` | — *(needs a device)* |
+| Pairing leaves the onion down for minutes | SIGHUP instead of restart | `pairing_stability.sh` S6 (≤45s) |
+| Readiness latches onto a previous publish | `hs.log` offset mark | `pairing_stability.sh` S6 |
+| Revocation only as strong as the bearer token | `reload(hard=true)` | `pairing_stability.sh` S4b (`000`) |
+| "Connected" shown before any answer | `CONNECTED` set by `refresh()` only | — *(needs a device)* |
 | Cross-thread container corruption | `QMutex` on balance strings and `BlockStore` | — *(soak)* |
 
 ---
