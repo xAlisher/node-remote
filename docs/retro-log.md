@@ -82,3 +82,48 @@ fieldcraft, then cleared.
   from timing correlation (78s tick vs 80s crash) without testing the correlation — changing
   the interval to 30s should have moved the crash and did not, which I only noticed after
   the next crash.
+- [process] **Diagnosed a silent auth failure by hypothesis for two rounds instead of
+  deriving the key.** Wrong action: on "no data after pairing", reasoned about bootstrap
+  timing, republish races and descriptor windows across two deploy cycles. Root cause: a
+  Tor v3 client-auth mismatch produces *no error anywhere* — an un-authorized client is
+  indistinguishable from no client — so every layer reports the generic symptom and the
+  symptoms all point at timing. The decisive check took one command: derive the X25519
+  public key from the private half the phone stored and compare it to
+  `authorized_clients/phone.auth`. Do that FIRST whenever a client-authorized onion is
+  unreachable; timing hypotheses only after the credential is settled.
+- [project] **A poll timer performed a destructive action.** Wrong action: the pane called
+  `beginPairing()` from a 2.5s tick whenever `ready && busy && pairUri === ""`. That call
+  mints a new keypair, truncates `phone.auth` and rotates the bearer token — so a working
+  pairing could be destroyed with no user behind it and no error at either end. Root cause:
+  the destructive step was not named as destructive anywhere, and the guard that existed
+  (`paired`) keyed on "a key exists" rather than "a device has used this key".
+- [process] **Wrote a test for "do not destroy the user's pairing" that destroyed the
+  user's pairing.** Wrong action: the suites ran against the machine's real module state,
+  minting pairings, revoking clients and persisting tokens in the same directory a live
+  phone depends on. Root cause: never asked where the module writes. Evidence had been
+  visible for hours — a stray `pixel10` client from an earlier run, and a persisted
+  `device_token` that silently overrode `NODE_REMOTE_TOKEN` and produced two "unauthorized"
+  failures I nearly attributed to a code change. All suites now set `XDG_DATA_HOME`.
+- [process] **Believed a code comment instead of the tool's documentation.** Wrong action:
+  accepted `reload()`'s claim that "tor parses authorized_clients once, at startup" and
+  designed around a full tor restart, which cost 2m20s of unreachable onion after every
+  pairing — the entire "connected but no data" complaint. Root cause: the comment was
+  confident and specific, so it read as researched. Tor re-reads them on SIGHUP; republish
+  is now 2–4s. A comment asserting a dependency's behaviour is a claim to verify, not a fact.
+- [process] **An optimisation silently weakened a security property, and "not 200" hid it.**
+  Wrong action: switched revocation to SIGHUP along with pairing. A HUP leaves the revoked
+  client's cached descriptor and intro points alive, so it still reaches the service and is
+  stopped only by the bearer token. Root cause: the assertion was `!= 200`, so `000 → 401`
+  passed. Caught only because the test PRINTS the code and I read it. Assertions on
+  security properties must state the property (`000` = cannot reach), not its negation.
+- [process] **`pkill -f` killed my own shell, again.** Wrong action: `pkill -f "tor -f
+  /extra/tmp/node_remote"` to clear a stale lock; the pattern matched the bash command line
+  containing it. Root cause: this exact trap is already recorded in memory for
+  `logos_host` and I reached for the pattern form anyway. Kill by PID.
+- [process] **Reported a build as verified from "BUILD SUCCESSFUL".** Wrong action: gradle
+  said `BUILD SUCCESSFUL in 1s` after a Kotlin edit and I nearly took it. Root cause: a 1s
+  build is up-to-date caching, not compilation. Also grepped one `classes.dex` of four and
+  read 0 matches as "not in the build". Check the artifact, and check all of it.
+- [env] **Hardcoded display server in the deploy script.** Wrong action: `WAYLAND_DISPLAY=
+  wayland-0` when khidr had moved to X11 after a power cut. Qt aborted instantly with an
+  EMPTY log, which reads as a broken build rather than a missing socket. Now detects.
