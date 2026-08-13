@@ -91,8 +91,21 @@ fun StatusTab(s: NodeState, raw: String, note: String = "", nowMs: Long = 0L,
     // poll, so with the desktop gone the tiles below keep asserting the last Height/Peers/
     // Blend/Balance indefinitely — the app read "Online" with live-looking numbers while
     // Basecamp had been down for minutes.
+    // NOT CONNECTED => EVERY field reads "—". No grace period, no last-known values left on
+    // screen pretending to be current.
+    //
+    // `live` requires BOTH: the desktop answered THIS poll (s.answered) and the reading is
+    // not older than the staleness window (polling may have stopped altogether, in which
+    // case the last frame still says answered=true forever).
+    //
+    // Everything below the pill — Blend, Balance, tip, lib, peer id — is parsed from `raw`,
+    // which is only rewritten on a SUCCESSFUL poll. Dropping the JSON is what makes those
+    // fields fall back to their "—" defaults; without it they keep asserting the last good
+    // values, which is how the app showed "Blend Edge" for a node that was not running.
+    // Height/Slot/Peers come from NodeState and are already -1 (=> "—") when unreachable.
     val stale = nowMs > 0 && s.isStale(nowMs)
-    val o = remember(raw, stale) { if (stale) null else runCatching { JSONObject(raw) }.getOrNull() }
+    val live = s.answered && !stale
+    val o = remember(raw, live) { if (live) runCatching { JSONObject(raw) }.getOrNull() else null }
 
     Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(16.dp),
            verticalArrangement = Arrangement.spacedBy(12.dp)) {
@@ -107,11 +120,11 @@ fun StatusTab(s: NodeState, raw: String, note: String = "", nowMs: Long = 0L,
         val nodeErr = s.error.takeIf { it.isNotEmpty() && s.status == "Error" }
         val shown = note.takeIf { it.isNotEmpty() } ?: nodeErr
         if (shown != null) ErrorCard(shown, control)
-        else NodeStateBlock(s, control, stale)
+        else NodeStateBlock(s, control, !live)
 
         // Say HOW old, rather than silently blanking the screen. "Last reading 6 min ago"
         // is information; a bare "Waiting for data…" with no history is not.
-        if (stale) {
+        if (!live && s.atMillis > 0 && nowMs > 0) {
             val mins = ((nowMs - s.atMillis) / 60_000).toInt()
             Text(if (mins >= 1) "Last reading $mins min ago — can't reach your node now"
                  else "Last reading moments ago — can't reach your node now",

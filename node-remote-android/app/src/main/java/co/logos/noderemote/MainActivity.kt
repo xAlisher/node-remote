@@ -518,8 +518,14 @@ class MainActivity : ComponentActivity() {
                                 }
                             }
                         }
-                        1 -> BlocksTab(blocks)
-                        else -> ProposalsTab(proposals)
+                        // Same rule as the Status fields: when we cannot reach the node,
+                        // a cached list is not current data. Blocks/proposals are only
+                        // rewritten on a SUCCESSFUL fetch, so without this they sit there
+                        // looking live while the desktop is gone.
+                        1 -> BlocksTab(if (state.answered && !state.isStale(nowMs)) blocks
+                                       else emptyList())
+                        else -> ProposalsTab(if (state.answered && !state.isStale(nowMs)) proposals
+                                             else emptyList())
                     }
                 }
             }
