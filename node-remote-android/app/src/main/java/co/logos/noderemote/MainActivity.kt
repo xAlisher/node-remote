@@ -506,8 +506,9 @@ class MainActivity : ComponentActivity() {
                                     contentPadding = PaddingValues(horizontal = 8.dp, vertical = 0.dp),
                                 ) {
                                     if (busy) {
-                                        CircularProgressIndicator(Modifier.size(16.dp),
-                                            strokeWidth = 2.dp, color = tint)
+                                        // Nothing. BusyCard already shows a spinner beside
+                                        // the label, and rendering a second one here made a
+                                        // single action look like two.
                                     } else {
                                         if (running) StopGlyph(tint) else PlayGlyph(tint)
                                         Spacer(Modifier.width(8.dp))

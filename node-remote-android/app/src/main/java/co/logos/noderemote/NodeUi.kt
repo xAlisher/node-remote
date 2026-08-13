@@ -220,22 +220,26 @@ fun StatusTab(s: NodeState, raw: String, note: String = "", nowMs: Long = 0L,
  *  to report, and offering to copy "starting node…" implies something went wrong. */
 @Composable
 private fun BusyCard(text: String, control: @Composable () -> Unit = {}) {
-    Surface(color = LogosColors.orange300.copy(alpha = 0.10f),
+    // Structurally IDENTICAL to NodeStateBlock — same alpha, same paddings, same single Row,
+    // same titleMedium — so swapping between them cannot change the block's height and the
+    // page does not jump every time you press start or stop.
+    Surface(color = LogosColors.orange300.copy(alpha = 0.12f),
             shape = MaterialTheme.shapes.medium,
             modifier = Modifier.fillMaxWidth()) {
-        Column {
-            Row(Modifier.fillMaxWidth().padding(start = 16.dp, top = 14.dp, bottom = 6.dp, end = 14.dp),
-                verticalAlignment = Alignment.CenterVertically) {
-                CircularProgressIndicator(Modifier.size(14.dp), strokeWidth = 2.dp,
+        Column(Modifier.padding(horizontal = 16.dp, vertical = 14.dp)) {
+            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                // The ONE spinner. The control renders none while busy — two spinners for a
+                // single action read as two things happening.
+                CircularProgressIndicator(Modifier.size(16.dp), strokeWidth = 2.dp,
                                           color = LogosColors.orange300)
                 Spacer(Modifier.width(10.dp))
                 Text(text.replaceFirstChar { it.uppercase() },
+                     fontWeight = FontWeight.Bold,
                      color = LogosColors.orange300,
-                     style = MaterialTheme.typography.bodyLarge,
+                     style = MaterialTheme.typography.titleMedium,
                      modifier = Modifier.weight(1f))
+                control()
             }
-            // Keep the control reachable, same as ErrorCard.
-            Row(Modifier.fillMaxWidth().padding(start = 14.dp, bottom = 8.dp)) { control() }
         }
     }
 }
