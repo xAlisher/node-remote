@@ -17,6 +17,7 @@
 // mistake was invisible — libc++ on macOS does not, and the darwin build failed with
 // "no member named 'kill' in the global namespace". It was also guarded behind Q_OS_LINUX,
 // so macOS got no signal header at all.
+#include <dlfcn.h>   // dladdr — locate our own .so/.dylib
 #include <signal.h>
 #include <sys/types.h>
 
@@ -36,19 +37,42 @@ constexpr QFileDevice::Permissions kOwnerOnlyDir =
 // This comment used to claim the bundle existed when it did not. Nothing caught it because
 // the PATH fallback finds /bin/tor on any Linux desktop; the gap only surfaced on a Mac,
 // where there is usually no tor at all and the module simply cannot start its onion.
+// The directory THIS PLUGIN was loaded from.
+//
+// QCoreApplication::applicationDirPath() is the HOST's directory — inside the AppImage that
+// is /tmp/.mount_logos-*/usr/bin — not ours, so "<appDir>/bin/tor" never existed. The other
+// branch read $NODE_REMOTE_MODULE_DIR, a variable nothing in the platform sets; we invented
+// it. So resolveTor() always fell through to PATH, which found the system tor on Linux and
+// nothing at all on a Mac. The bundle shipped correctly and could not be found.
+//
+// dladdr() on our own code is the honest answer: it reports the path of the shared object
+// containing the given address, which is exactly this plugin. Works the same on Linux and
+// macOS, needs no cooperation from the host, and cannot go stale.
+QString moduleDir()
+{
+    Dl_info info{};
+    if (dladdr(reinterpret_cast<const void*>(&moduleDir), &info) != 0 && info.dli_fname)
+        return QFileInfo(QString::fromLocal8Bit(info.dli_fname)).absolutePath();
+    return QString();
+}
+
 QString resolveTor()
 {
+    // Explicit override wins — used by tests and by anyone pointing at a system tor.
     const QByteArray override = qgetenv("NODE_REMOTE_TOR_BIN");
     if (!override.isEmpty()) return QString::fromLocal8Bit(override);
 
-    const QString bundled = QCoreApplication::applicationDirPath() + "/bin/tor";
-    if (QFileInfo::exists(bundled)) return bundled;
+    // The bundle we ship, beside this plugin. See nix/tor-bundle.nix.
+    const QString dir = moduleDir();
+    if (!dir.isEmpty()) {
+        const QString bundled = dir + "/bin/tor";
+        if (QFileInfo::exists(bundled)) return bundled;
+    }
 
-    // Also try alongside this plugin — logos_host may run from a different cwd.
-    const QString beside = QFileInfo(QString::fromLocal8Bit(qgetenv("NODE_REMOTE_MODULE_DIR")))
-                               .absoluteFilePath() + "/bin/tor";
-    if (QFileInfo::exists(beside)) return beside;
-
+    // Kept as a fallback, not as the plan: on Linux this quietly worked for months and hid
+    // the fact that nothing was bundled. If it is ever the answer, the bundle is missing.
+    qWarning() << "OnionService: no bundled tor beside the plugin (looked in" << dir
+               << ") — falling back to PATH";
     return QStringLiteral("tor");
 }
 
