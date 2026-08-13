@@ -122,6 +122,19 @@ fun StatusTab(s: NodeState, raw: String, note: String = "",
                 ?: o?.optString("balance")?.ifEmpty { null }
             InfoRow("Balance", balance ?: "—",
                     if (balance != null) LogosColors.white else LogosColors.gray400)
+
+            // Only when there is NOTHING to show. The module keeps the last good figure and
+            // reports why the latest refresh failed, so both were rendered at once —
+            // "100M LGO" directly above "Balance unavailable: Unknown wallet address",
+            // which contradict each other. A stale figure plus a reason is a *stale* state,
+            // not an unavailable one; if we have a number, show the number.
+            if (balance == null) {
+                o?.optString("balanceError")?.takeIf { it.isNotEmpty() && s.reachable }?.let {
+                    Text("Balance unavailable: $it",
+                         style = MaterialTheme.typography.labelSmall,
+                         color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+            }
         }
 
         Row(horizontalArrangement = Arrangement.spacedBy(12.dp), modifier = Modifier.fillMaxWidth()) {
@@ -139,12 +152,6 @@ fun StatusTab(s: NodeState, raw: String, note: String = "",
                  Modifier.weight(1f),
                  accent = if (blend == "Edge" || blend == "Core") LogosColors.blue400
                           else LogosColors.gray400)
-        }
-
-        o?.optString("balanceError")?.takeIf { it.isNotEmpty() }?.let {
-            Text("Balance unavailable: $it",
-                 style = MaterialTheme.typography.labelSmall,
-                 color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
 
         // Identifiers get their own block with copy affordances — they are long hex that

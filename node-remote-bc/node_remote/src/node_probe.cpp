@@ -274,7 +274,20 @@ QByteArray NodeProbe::statusJson()
         const Recovery rec = recoveryStatus();
         const QString honest = lastNodeError();
 
-        if (rec.active || honest.startsWith(kNoticePrefix)) {
+        if (intent == Intent::Stopped) {
+            // INTENT WINS. Checked FIRST, ahead of recovery, because recovery detection is
+            // a LOG SCRAPE and a log line outlives the state it describes: after a stop the
+            // "…stored blocks to replay…" lines from the previous startup are still sitting
+            // in the tail, so a stopped node reported "Recovering chain" with the phone
+            // offering "Stop node". Observed live — status "Recovering" with
+            // "blocks": 0 (the zero count is the tell: nothing is actually replaying)
+            // while intent was already "stopped".
+            //
+            // This is the same defect the intent latch was introduced to kill; recovery was
+            // simply left as an ungated scrape. A node the user asked to stop is stopped —
+            // it cannot be recovering, and it has no error.
+            out["status"] = "Stopped";
+        } else if (rec.active || honest.startsWith(kNoticePrefix)) {
             // Alive, replaying stored blocks before the API comes up. A DISTINCT state from
             // a plain start — the phone shows "Recovering chain" only here, with the count.
             out["status"] = "Recovering";
@@ -285,10 +298,6 @@ QByteArray NodeProbe::statusJson()
             out["notice"] = rec.blocks > 0
                 ? QStringLiteral("Replaying %1 stored blocks…").arg(rec.blocks)
                 : QStringLiteral("Replaying stored blocks…");
-        } else if (intent == Intent::Stopped) {
-            // The user asked for this. A stopped node is not a failure — never scrape the
-            // log for an error here.
-            out["status"] = "Stopped";
         } else if (intent == Intent::Started && !honest.isEmpty()) {
             // Expected up, down with an actionable cause. The ONLY path that surfaces the
             // error table.
