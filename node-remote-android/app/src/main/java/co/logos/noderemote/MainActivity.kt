@@ -78,6 +78,10 @@ class MainActivity : ComponentActivity() {
     private fun App(preUri: String, preTok: String, auto: Boolean) {
         var uri by remember { mutableStateOf(preUri) }
         var token by remember { mutableStateOf(preTok) }
+        // A scanned pairing waits HERE until the user has compared the code. Nothing touches
+        // `uri`/`token` — and so nothing connects — until Confirm.
+        var pendingUri by remember { mutableStateOf("") }
+        var pendingTok by remember { mutableStateOf("") }
         var link by remember { mutableStateOf(Link.DISCONNECTED) }
         var tab by remember { mutableIntStateOf(0) }
 
@@ -168,11 +172,11 @@ class MainActivity : ComponentActivity() {
             if (raw.isNullOrBlank()) { note = "" }
             else if (parse(raw) == null) { note = "That QR isn't a Node Remote pairing code" }
             else {
-                uri = raw.trim()
-                // The token rides in the URI's t= field; the manual path still accepts one.
-                token = Uri.parse(raw.trim()).getQueryParameter("t").orEmpty()
+                // Stage it for confirmation instead of connecting. Confirming AFTER the
+                // link is live confirms nothing.
+                pendingUri = raw.trim()
+                pendingTok = Uri.parse(raw.trim()).getQueryParameter("t").orEmpty()
                 note = ""
-                scope.launch { connect() }
             }
         }
 
@@ -380,7 +384,18 @@ class MainActivity : ComponentActivity() {
         Scaffold(topBar = {
             TopAppBar(
                 navigationIcon = {
-                    if (!connected && showEnterUri) {
+                    if (!connected && pendingUri.isNotEmpty()) {
+                    val onionOf = parse(pendingUri)?.first.orEmpty()
+                    ConfirmPairingScreen(
+                        code = pairingSas(pendingTok, onionOf),
+                        onConfirm = {
+                            uri = pendingUri; token = pendingTok
+                            pendingUri = ""; pendingTok = ""
+                            scope.launch { connect() }
+                        },
+                        onDismiss = { pendingUri = ""; pendingTok = ""; note = "" },
+                    )
+                } else if (!connected && showEnterUri) {
                         IconButton(onClick = { showEnterUri = false; note = "" }) {
                             ChevronLeftGlyph(LogosColors.white)
                         }
@@ -421,20 +436,7 @@ class MainActivity : ComponentActivity() {
                              lineHeight = 13.sp,
                              modifier = Modifier.offset(y = (-3).dp))
 
-                        // THE PAIRING CODE. Shown while we have a pairing but no data yet —
-                        // exactly the window in which the desktop is asking "confirm this
-                        // code matches your phone". The app had no SAS at all, so that
-                        // instruction could not be followed, and the defence against a
-                        // photographed QR was missing on the end that matters: the attacker
-                        // holds the code, but the real user sees digits that do not match.
-                        if (!state.answered && token.isNotEmpty() && onion.isNotEmpty()) {
-                            val code = pairingSas(token, onion)
-                            if (code.isNotEmpty())
-                                Text("Pairing code $code — check it matches the desktop",
-                                     fontSize = 12.sp, color = LogosColors.orange300,
-                                     lineHeight = 13.sp,
-                                     modifier = Modifier.offset(y = (-2).dp))
-                        }
+
                     }
                 },
                 actions = {
@@ -461,8 +463,8 @@ class MainActivity : ComponentActivity() {
 
                 if (!connected && showEnterUri) {
                     EnterUriScreen(uri, { u, t ->
-                        uri = u; token = t
-                        scope.launch { connect() }
+                        pendingUri = u; pendingTok = t
+                        showEnterUri = false
                     }, note)
                 } else if (!connected) {
                     WelcomeScreen(
