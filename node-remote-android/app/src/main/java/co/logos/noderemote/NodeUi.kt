@@ -130,15 +130,6 @@ fun StatusTab(s: NodeState, raw: String, note: String = "", nowMs: Long = 0L,
             else -> NodeStateBlock(s, control, !live)
         }
 
-        // Say HOW old, rather than silently blanking the screen. "Last reading 6 min ago"
-        // is information; a bare "Waiting for data…" with no history is not.
-        if (!live && s.atMillis > 0 && nowMs > 0) {
-            val mins = ((nowMs - s.atMillis) / 60_000).toInt()
-            Text(if (mins >= 1) "Last reading $mins min ago — can't reach your node now"
-                 else "Last reading moments ago — can't reach your node now",
-                 style = MaterialTheme.typography.bodySmall,
-                 color = MaterialTheme.colorScheme.onSurfaceVariant)
-        }
 
         // A working-but-busy node explains itself in plain text under the state, not in the
         // red card. Red is for things you must act on.
