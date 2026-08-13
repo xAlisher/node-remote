@@ -25,6 +25,17 @@ pass=0; fail=0
 ok()  { echo "  PASS  $*"; pass=$((pass+1)); }
 bad() { echo "  FAIL  $*"; fail=$((fail+1)); }
 
+# ISOLATE THE MODULE'S DATA DIR. This suite calls beginPairing and revokeClient for real;
+# without XDG_DATA_HOME it does so against the MACHINE'S OWN pairing, so running it on a
+# host with a paired phone silently revokes that phone. A leftover "pixel10" client from an
+# earlier run of this very file is what made the point.
+#
+# Stable, not mktemp: tor's DataDirectory hangs off this, and a fresh one each run forces a
+# cold consensus fetch that presents as an onion that never publishes.
+export XDG_DATA_HOME="${NR_TEST_HOME:-$HOME/.cache/node_remote-test-home}"
+mkdir -p "$XDG_DATA_HOME"
+rm -rf "$XDG_DATA_HOME"/*/node_remote/hs "$XDG_DATA_HOME"/*/node_remote/last_seen 2>/dev/null
+
 export LOGOSCORE_CONFIG_DIR=$(mktemp -d)
 MDIR=$(mktemp -d); RUN=$(mktemp -d)
 export NODE_REMOTE_TOKEN="tok-$(head -c12 /dev/urandom | od -An -tx1 | tr -d ' \n')"

@@ -12,6 +12,8 @@
 #include <QByteArray>
 #include <QJsonObject>
 #include <QList>
+#include <QMutex>
+#include <QMutexLocker>
 #include <QString>
 
 struct BlockEntry {
@@ -30,9 +32,15 @@ public:
     // 100 matches logos_node_1click's BlockModel::kMaxBlocks. Newest first.
     static constexpr int kMax = 100;
 
+    // ALL of these touch m_blocks, and m_blocks is written from the blockchain_module
+    // onNewBlock callback while being READ from a QHttpServer handler (GET /v1/blocks) —
+    // two different threads. QList is implicitly shared and its refcount is not safe
+    // against a concurrent write, so this is the same defect that SIGSEGV'd the module via
+    // the balance QStrings (fixed in 033525f, issue #4). The fault surfaces ~20s later in
+    // unrelated code, so it will never be visible in a backtrace.
     void append(const QString& tsIso, const QString& rawPayload);
-    void clear() { m_blocks.clear(); }
-    int  count() const { return m_blocks.size(); }
+    void clear() { QMutexLocker lk(&m_mu); m_blocks.clear(); }
+    int  count() const { QMutexLocker lk(&m_mu); return m_blocks.size(); }
 
     /// [{timestamp,slot,version,parentBlock,blockRoot,leaderKey,entropy,proof,
     ///   voucherCm,signature,txCount,transactions[],rawJson,parsed}, …]
@@ -43,5 +51,6 @@ public:
     static QByteArray proposalsJson(const QString& logDir, int limit);
 
 private:
+    mutable QMutex    m_mu;       // guards m_blocks — see the note above
     QList<BlockEntry> m_blocks;   // index 0 == newest
 };

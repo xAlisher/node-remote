@@ -2,6 +2,7 @@
 
 #include <QMutex>
 #include <QString>
+#include <QStringList>
 #include <string>
 #include "logos_module_context.h"
 
@@ -125,6 +126,11 @@ private:
     void        persistToken(const std::string& token) const;
     std::string loadToken() const;
 
+    /// The identity-bearing values in a user_config.yaml, in file order — funding_pk,
+    /// non_ephemeral_signing_key_id, secret_key_kms_id. Used to report whether a
+    /// regenerate preserved or re-minted the node's identity.
+    static QStringList configIdentityKeys(const QString& path);
+
     // Last-seen is persisted so a restart does not forget an existing pairing. Throttled:
     // this is written from the request path.
     // std::string / long long, not QString / qint64 — this header stays Qt-free (the
@@ -145,6 +151,10 @@ private:
     // across threads is what was killing the module.
     mutable QMutex m_balanceMu;
     QString m_primaryAddress, m_balanceRaw, m_balance, m_balanceError;
+    // Last observed node reachability: written on the HTTP thread by getNodeStatus(), read
+    // on the timer thread by refreshBalance() — hence under the same mutex.
+    bool    m_lastReachable = false;
+    qint64  m_lastBalanceAt = 0;      // timer thread only
 
     OnionService* m_onion = nullptr;
     BlockStore*   m_blocks = nullptr;

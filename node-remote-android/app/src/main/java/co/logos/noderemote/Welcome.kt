@@ -27,6 +27,8 @@ import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.Dp
+import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 
@@ -45,6 +47,77 @@ const val X_URL = "https://x.com/alisher"
  * can see this link exists", which overpromises: per the Tor spec, restricted discovery
  * protects descriptor lookup and decryption, not the fact that Tor is in use.
  */
+/**
+ * Confirm the pairing before it is used.
+ *
+ * Its own screen, not a line in a header: the SAS is the ONLY defence against a QR someone
+ * photographed off your desktop, and it only works if the user actually compares the digits.
+ * Tucked into a status line it is scenery — a decision needs a stop and two buttons.
+ *
+ * Shown after a scan (or a pasted URI) and BEFORE connecting, because confirming after the
+ * link is live confirms nothing.
+ */
+@Composable
+fun ConfirmPairingScreen(
+    code: String,
+    onConfirm: () -> Unit,
+    onDismiss: () -> Unit,
+) {
+    Column(Modifier.fillMaxSize()) {
+        Column(
+            Modifier.weight(1f).verticalScroll(rememberScrollState())
+                .padding(horizontal = 24.dp, vertical = 32.dp),
+            verticalArrangement = Arrangement.spacedBy(14.dp),
+        ) {
+            LucideGlyph(Ic.BLOCKS, LogosColors.white, 44.dp)
+
+            Text("Confirm pairing", fontWeight = FontWeight.Bold, fontSize = 30.sp,
+                 color = LogosColors.white)
+
+            Text("Check this code matches the one shown in Basecamp.",
+                 style = MaterialTheme.typography.bodyLarge,
+                 color = LogosColors.white)
+
+            // The digits, given the room they deserve — this is the thing being compared.
+            Surface(color = LogosColors.gray875,
+                    shape = RoundedCornerShape(12.dp),
+                    modifier = Modifier.fillMaxWidth()) {
+                Text(code,
+                     modifier = Modifier.fillMaxWidth().padding(vertical = 22.dp),
+                     textAlign = TextAlign.Center,
+                     fontFamily = FontFamily.Monospace,
+                     fontWeight = FontWeight.Bold,
+                     fontSize = 40.sp,
+                     letterSpacing = 6.sp,
+                     color = LogosColors.orange300)
+            }
+
+            Text("If the digits are different, someone else's code reached this phone — " +
+                 "dismiss and start again on the desktop.",
+                 style = MaterialTheme.typography.bodySmall,
+                 color = MaterialTheme.colorScheme.onSurfaceVariant)
+
+            Spacer(Modifier.height(6.dp))
+
+            Button(
+                onClick = onConfirm,
+                modifier = Modifier.fillMaxWidth().height(52.dp),
+                shape = RoundedCornerShape(12.dp),
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = LogosColors.orange500,
+                    contentColor = LogosColors.white),
+            ) { Text("Confirm", fontWeight = FontWeight.Bold, fontSize = 16.sp) }
+
+            OutlinedButton(
+                onClick = onDismiss,
+                modifier = Modifier.fillMaxWidth().height(52.dp),
+                shape = RoundedCornerShape(12.dp),
+                colors = ButtonDefaults.outlinedButtonColors(contentColor = LogosColors.white),
+            ) { Text("Dismiss", fontSize = 15.sp) }
+        }
+    }
+}
+
 @Composable
 fun WelcomeScreen(
     onScan: () -> Unit,

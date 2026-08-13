@@ -78,6 +78,10 @@ class MainActivity : ComponentActivity() {
     private fun App(preUri: String, preTok: String, auto: Boolean) {
         var uri by remember { mutableStateOf(preUri) }
         var token by remember { mutableStateOf(preTok) }
+        // A scanned pairing waits HERE until the user has compared the code. Nothing touches
+        // `uri`/`token` — and so nothing connects — until Confirm.
+        var pendingUri by remember { mutableStateOf("") }
+        var pendingTok by remember { mutableStateOf("") }
         var link by remember { mutableStateOf(Link.DISCONNECTED) }
         var tab by remember { mutableIntStateOf(0) }
 
@@ -143,17 +147,23 @@ class MainActivity : ComponentActivity() {
             if (!hasInternet()) { link = Link.NO_INTERNET; return }
             link = Link.CONNECTING
             TorClient.start(this@MainActivity) { android.util.Log.i(TAG, it) }
-            var w = 0
-            while (TorClient.socksPort == 0 && w < 180) { delay(1000); w++ }
-            if (TorClient.socksPort == 0) {
+            // Wait for BOOTSTRAP, not for the SOCKS port. See TorClient.awaitReady.
+            if (!TorClient.awaitReady()) {
                 link = if (hasInternet()) Link.CONNECTING else Link.NO_INTERNET
                 note = "Tor is taking longer than usual to start"
                 return
             }
+            var authOk = true
             TorClient.addClientAuth(p.first, p.second)
-                .onFailure { note = "client auth failed: ${it.message}" }
+                .onFailure { authOk = false; note = "client auth failed: ${it.message}" }
+            if (!authOk) { link = Link.CONNECTING; return }
             note = ""
-            link = Link.CONNECTED
+            // CONNECTING, not CONNECTED. Installing a credential proves nothing about
+            // reachability — the descriptor may not be published yet, which is exactly the
+            // case right after pairing. refresh() promotes this to CONNECTED on the first
+            // request the desktop actually answers. Claiming it here is what put "Connected"
+            // on screen next to an empty node panel for two minutes.
+            link = Link.CONNECTING
             // Only now — a watcher started before the circuit is up would spend its first
             // polls failing and could fire a spurious "can't reach your node".
             syncWatcher()
@@ -168,11 +178,11 @@ class MainActivity : ComponentActivity() {
             if (raw.isNullOrBlank()) { note = "" }
             else if (parse(raw) == null) { note = "That QR isn't a Node Remote pairing code" }
             else {
-                uri = raw.trim()
-                // The token rides in the URI's t= field; the manual path still accepts one.
-                token = Uri.parse(raw.trim()).getQueryParameter("t").orEmpty()
+                // Stage it for confirmation instead of connecting. Confirming AFTER the
+                // link is live confirms nothing.
+                pendingUri = raw.trim()
+                pendingTok = Uri.parse(raw.trim()).getQueryParameter("t").orEmpty()
                 note = ""
-                scope.launch { connect() }
             }
         }
 
@@ -182,6 +192,11 @@ class MainActivity : ComponentActivity() {
                 TorClient.get("http://$onion/v1/status", token)
                     .onSuccess { rawStatus = it; state = NodeState.parse(it, System.currentTimeMillis()) }
                     .onFailure { state = NodeState.unreachable(System.currentTimeMillis(), it.message.orEmpty()) }
+                // A control-response note is transient. Once the node has settled into a
+                // healthy or cleanly-stopped state, a lingering note (e.g. a slow-start
+                // message) is stale — drop it so it can't sit on screen as a red card while
+                // the node is plainly running.
+                if (state.reachable || state.isStopped()) note = ""
                 TorClient.get("http://$onion/v1/blocks", token).onSuccess { blocks = Block.list(it) }
                 TorClient.get("http://$onion/v1/proposals", token).onSuccess { proposals = Proposal.list(it) }
             }
@@ -227,24 +242,50 @@ class MainActivity : ComponentActivity() {
                     runCatching {
                         val o = org.json.JSONObject(body)
                         val err = o.optString("error")
+                        val code = o.optString("code")
                         when {
                             // Regenerate is the one success worth a word: the module returns
                             // the REAL backup path it just wrote, and that is precisely what
                             // you need if the new config turns out wrong. Telling someone a
                             // backup exists without naming it is not much better than silence.
-                            o.optBoolean("ok", false) && path == "regenerate" ->
-                                o.optString("backup").takeIf { it.isNotEmpty() }
-                                    ?.let { "Config regenerated. Previous file saved as $it" }
-                                    ?: ""
-                            o.optBoolean("ok", false) -> ""       // success: nothing to say
-                            // NOT an error: the request's INTENT was already satisfied.
-                            // "The node is not running" in reply to a STOP is the desired
-                            // end state, and painting a normal stopped node red teaches
-                            // people to ignore the red box that does matter.
+                            o.optBoolean("ok", false) && path == "regenerate" -> {
+                                val bak = o.optString("backup")
+                                // The module now reports whether the node's IDENTITY values
+                                // (funding_pk, signing key ids) survived the regenerate.
+                                // If they moved, that is the single most important thing to
+                                // say: it is the leader identity, and the backup is the only
+                                // way back.
+                                val changed = o.optBoolean("identityChanged", false)
+                                buildString {
+                                    append(if (changed)
+                                        "Config regenerated — YOUR NODE IDENTITY CHANGED. "
+                                    else "Config regenerated. ")
+                                    if (bak.isNotEmpty()) append("Previous file saved as $bak")
+                                }
+                            }
+                            // Trust STRUCTURE, not phrasing. The module returns ok:true for a
+                            // real stop/start AND for the idempotent already_stopped/
+                            // already_running cases, so a satisfied intent says nothing.
+                            o.optBoolean("ok", false) -> ""
+                            // Structured idempotent codes, in case a build returns ok:false
+                            // with a code (belt and suspenders).
+                            code == "already_stopped" || code == "already_running" -> ""
+                            // Destructive actions refuse when the node is not fully stopped
+                            // — including the replaying/starting window, which "reachable"
+                            // alone cannot see. Say so plainly; this is a refusal to protect
+                            // the database, not a failure.
+                            code == "node_not_stopped" || code == "node_running" ->
+                                err.ifEmpty { "Stop the node first." }
+                            // Fallback for OLDER desktop modules that still reply ok:false
+                            // with only an English message and no code.
                             isAlreadyInDesiredState(path, err) -> ""
-                            else -> err.ifEmpty { body }
+                            // A genuine failure. Show the module's message — but NEVER the
+                            // raw envelope: an empty error used to dump the whole JSON body on
+                            // screen in red (seen on a slow start), which reads as a crash for
+                            // what is often just the node still coming up.
+                            else -> err.ifEmpty { "Couldn't ${path} the node — check the desktop" }
                         }
-                    }.getOrElse { body }
+                    }.getOrElse { "Couldn't ${path} the node — check the desktop" }
                 },
                 onFailure = { it.message ?: "request failed" },
             )
@@ -264,6 +305,14 @@ class MainActivity : ComponentActivity() {
             while (wantConnected) { refresh(); delay(10_000) }
         }
 
+        // Drives staleness. The poll loop only recomposes when a reading SUCCEEDS, so with
+        // the desktop gone nothing would ever re-evaluate how old the last frame is and the
+        // UI would sit on it indefinitely. This ticks regardless of the network.
+        var nowMs by remember { mutableLongStateOf(System.currentTimeMillis()) }
+        LaunchedEffect(wantConnected) {
+            while (wantConnected) { nowMs = System.currentTimeMillis(); delay(5_000) }
+        }
+
         val connected = wantConnected
         // Only a frame the DESKTOP answered counts. A failed fetch is not knowledge of
         // the node's state, and treating it as such made the app show "Start node" —
@@ -281,12 +330,13 @@ class MainActivity : ComponentActivity() {
         // It also mis-gated the settings page: Wipe/Regenerate are enabled on !nodeRunning,
         // so both were offered against a LIVE bootstrapping node. The desktop refuses that
         // server-side, but the UI should not be offering it.
-        // reachable OR recovering. A node replaying its database has not brought its API up
-        // yet, so `reachable` is false — but the process is alive and stoppable, and a node
-        // stuck mid-replay is exactly when you want to be able to stop it. 1-click disables
-        // its control here; we deliberately do not, because "no button at all" leaves you
-        // with nothing to do but wait.
-        val running = state.reachable || state.isStarting()
+        // reachable OR coming-up (starting/recovering). A node replaying its database has
+        // not brought its API up yet, so `reachable` is false — but the process is alive and
+        // stoppable, and a node stuck mid-replay is exactly when you want to be able to stop
+        // it. 1-click disables its control here; we deliberately do not, because "no button
+        // at all" leaves you with nothing to do but wait. A Stopped node is NOT running, so
+        // it correctly offers Start.
+        val running = state.reachable || state.isStarting() || state.isRecovering()
 
         // Destructive-ish and remote: stopping a node from a phone by accident is a bad
         // afternoon, so it goes through a confirm rather than firing on tap.
@@ -364,7 +414,15 @@ class MainActivity : ComponentActivity() {
                         // Secondary line: how the PHONE is doing. Kept separate from the
                         // node's own state pill so it is always clear which one is unhappy.
                         val (txt, col) = when (link) {
-                            Link.CONNECTED -> "Connected via Tor" to LogosColors.green500
+                            // A stale reading cannot claim a live link. `link` is only
+                            // assigned inside refresh(), so when polling stops it keeps its
+                            // last value — the app read "Connected via Tor" while the
+                            // desktop's tor had died with Basecamp (it is a child of the
+                            // module host; dieWithParent takes it down). Verified down on
+                            // the rig while the phone still claimed Connected.
+                            Link.CONNECTED ->
+                                if (state.isStale(nowMs)) "Connecting via Tor" to LogosColors.orange300
+                                else "Connected via Tor" to LogosColors.green500
                             Link.CONNECTING -> "Connecting via Tor" to LogosColors.orange300
                             Link.NO_INTERNET -> "No internet" to LogosColors.red500
                             Link.DISCONNECTED -> "Disconnected" to LogosColors.gray400
@@ -372,6 +430,8 @@ class MainActivity : ComponentActivity() {
                         Text(txt, fontSize = 12.sp, color = col,
                              lineHeight = 13.sp,
                              modifier = Modifier.offset(y = (-3).dp))
+
+
                     }
                 },
                 actions = {
@@ -396,10 +456,23 @@ class MainActivity : ComponentActivity() {
         }) { pad ->
             Column(Modifier.padding(pad).fillMaxSize()) {
 
-                if (!connected && showEnterUri) {
+                // A staged pairing takes the whole screen until it is confirmed or dismissed.
+                // FIRST in the chain: it must pre-empt both Welcome and Enter-URI, since it
+                // is the step between scanning and connecting.
+                if (!connected && pendingUri.isNotEmpty()) {
+                    ConfirmPairingScreen(
+                        code = pairingSas(pendingTok, parse(pendingUri)?.first.orEmpty()),
+                        onConfirm = {
+                            uri = pendingUri; token = pendingTok
+                            pendingUri = ""; pendingTok = ""
+                            scope.launch { connect() }
+                        },
+                        onDismiss = { pendingUri = ""; pendingTok = ""; note = "" },
+                    )
+                } else if (!connected && showEnterUri) {
                     EnterUriScreen(uri, { u, t ->
-                        uri = u; token = t
-                        scope.launch { connect() }
+                        pendingUri = u; pendingTok = t
+                        showEnterUri = false
                     }, note)
                 } else if (!connected) {
                     WelcomeScreen(
@@ -455,7 +528,7 @@ class MainActivity : ComponentActivity() {
                         }
                     }
                     when (tab) {
-                        0 -> StatusTab(state, rawStatus, note) {
+                        0 -> StatusTab(state, rawStatus, note, nowMs) {
                             if (!hasData) {
                                 CircularProgressIndicator(Modifier.size(18.dp),
                                     strokeWidth = 2.dp, color = LogosColors.orange300)
@@ -475,8 +548,9 @@ class MainActivity : ComponentActivity() {
                                     contentPadding = PaddingValues(horizontal = 8.dp, vertical = 0.dp),
                                 ) {
                                     if (busy) {
-                                        CircularProgressIndicator(Modifier.size(16.dp),
-                                            strokeWidth = 2.dp, color = tint)
+                                        // Nothing. BusyCard already shows a spinner beside
+                                        // the label, and rendering a second one here made a
+                                        // single action look like two.
                                     } else {
                                         if (running) StopGlyph(tint) else PlayGlyph(tint)
                                         Spacer(Modifier.width(8.dp))
@@ -487,8 +561,14 @@ class MainActivity : ComponentActivity() {
                                 }
                             }
                         }
-                        1 -> BlocksTab(blocks)
-                        else -> ProposalsTab(proposals)
+                        // Same rule as the Status fields: when we cannot reach the node,
+                        // a cached list is not current data. Blocks/proposals are only
+                        // rewritten on a SUCCESSFUL fetch, so without this they sit there
+                        // looking live while the desktop is gone.
+                        1 -> BlocksTab(if (state.answered && !state.isStale(nowMs)) blocks
+                                       else emptyList())
+                        else -> ProposalsTab(if (state.answered && !state.isStale(nowMs)) proposals
+                                             else emptyList())
                     }
                 }
             }

@@ -22,6 +22,8 @@ pass=0; fail=0
 ok()  { echo "  PASS  $*"; pass=$((pass+1)); }
 bad() { echo "  FAIL  $*"; fail=$((fail+1)); }
 node_up() { curl -s -o /dev/null -w '%{http_code}' --max-time 4 http://127.0.0.1:8080/cryptarchia/info; }
+getstatus() { "$LOGOSCORE" call node_remote getNodeStatus 2>&1; }
+intent_now() { grep -oE 'nodeIntent=[a-z]+' "$HOME/.config/Logos/BlockchainUI.conf" 2>/dev/null | tail -1; }
 wait_for() { # wait_for <up|down> <secs>
   local want="$1" n="$2" i
   for ((i=0;i<n;i++)); do
@@ -99,6 +101,17 @@ if [ -n "${PORT:-}" ]; then
         "http://127.0.0.1:$PORT/v1/stop"); echo "  POST /v1/stop → $H"
   if wait_for down 40; then ok ":8080 is DOWN — an HTTP POST stopped a live node"
   else bad "node still serving after POST /v1/stop"; fi
+  # The STATE HONESTY claim (node-remote#1): a stop the user asked for must read as
+  # "Stopped", never as an Error carrying a stale log line ("deploy config" bug).
+  echo "  code in /v1/stop reply: $(echo "$H" | grep -oE '"code":"[a-z_]+"' | head -1)"
+  GS=$(getstatus); echo "  getNodeStatus → ${GS:0:200}"
+  if echo "$GS" | grep -q '"status":"Stopped"' && ! echo "$GS" | grep -q '"error"'; then
+    ok "state reads Stopped (no error) after a phone-side stop"
+  else bad "state not honest after stop — expected Stopped/no-error: $GS"; fi
+  # The shared-intent propagation (logos-blockchain-ui#40): the desktop config sees stopped.
+  IN=$(intent_now); echo "  shared intent: $IN"
+  [ "$IN" = "nodeIntent=stopped" ] && ok "shared intent propagated to the desktop config" \
+    || bad "shared intent not written as stopped: $IN"
 else bad "no http port; cannot test the HTTP path"; fi
 fi
 
@@ -106,6 +119,9 @@ echo "== L4  start it again"
 R2=$("$LOGOSCORE" call node_remote startNode "$CFG" "" 2>&1 | head -c 200); echo "  startNode → $R2"
 if wait_for up 90; then ok "node is back up"
 else bad "node did not restart"; fi
+IN2=$(intent_now); echo "  shared intent: $IN2"
+[ "$IN2" = "nodeIntent=started" ] && ok "shared intent flipped back to started" \
+  || bad "intent not started after restart: $IN2"
 
 echo
 echo "== summary: $pass passed, $fail failed"

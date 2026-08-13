@@ -85,9 +85,27 @@ data class Proposal(val id: String, val txs: Int, val removed: Int, val time: St
 }
 
 @Composable
-fun StatusTab(s: NodeState, raw: String, note: String = "",
+fun StatusTab(s: NodeState, raw: String, note: String = "", nowMs: Long = 0L,
               control: @Composable () -> Unit = {}) {
-    val o = remember(raw) { runCatching { JSONObject(raw) }.getOrNull() }
+    // A STALE reading must not be rendered as current. raw is only rewritten on a SUCCESSFUL
+    // poll, so with the desktop gone the tiles below keep asserting the last Height/Peers/
+    // Blend/Balance indefinitely — the app read "Online" with live-looking numbers while
+    // Basecamp had been down for minutes.
+    // NOT CONNECTED => EVERY field reads "—". No grace period, no last-known values left on
+    // screen pretending to be current.
+    //
+    // `live` requires BOTH: the desktop answered THIS poll (s.answered) and the reading is
+    // not older than the staleness window (polling may have stopped altogether, in which
+    // case the last frame still says answered=true forever).
+    //
+    // Everything below the pill — Blend, Balance, tip, lib, peer id — is parsed from `raw`,
+    // which is only rewritten on a SUCCESSFUL poll. Dropping the JSON is what makes those
+    // fields fall back to their "—" defaults; without it they keep asserting the last good
+    // values, which is how the app showed "Blend Edge" for a node that was not running.
+    // Height/Slot/Peers come from NodeState and are already -1 (=> "—") when unreachable.
+    val stale = nowMs > 0 && s.isStale(nowMs)
+    val live = s.answered && !stale
+    val o = remember(raw, live) { if (live) runCatching { JSONObject(raw) }.getOrNull() else null }
 
     Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(16.dp),
            verticalArrangement = Arrangement.spacedBy(12.dp)) {
@@ -96,10 +114,22 @@ fun StatusTab(s: NodeState, raw: String, note: String = "",
         // a failure is contradictory, and the reader has to work out which to believe.
         // Shown in full — the longest real one measured is 131 chars (a YAML syntax error
         // carrying line/column), and truncating that discards the part that locates it.
-        val nodeErr = s.error.takeIf { it.isNotEmpty() && s.answered }
-        val shown = note.takeIf { it.isNotEmpty() } ?: nodeErr
-        if (shown != null) ErrorCard(shown, control)
-        else NodeStateBlock(s, control)
+        // Only the honest Error state paints the red card. The module populates `error`
+        // exclusively when status=="Error" (node meant to be up, down with a cause), so a
+        // stopped/recovering node never shows red here.
+        val nodeErr = s.error.takeIf { it.isNotEmpty() && s.status == "Error" }
+        when {
+            // A control note ("stopping node…", "starting node…") is a TRANSIENT PROGRESS
+            // message, not a failure. It was routed through ErrorCard, so every normal
+            // start/stop flashed a red error panel — with a copy button, as if there were
+            // something to report. Busy gets its own card: accent orange, matching the
+            // Bootstrapping/Recovering pills, which are the other "working, not broken"
+            // states.
+            note.isNotEmpty() -> BusyCard(note, control)
+            nodeErr != null -> ErrorCard(nodeErr, control)
+            else -> NodeStateBlock(s, control, !live)
+        }
+
 
         // A working-but-busy node explains itself in plain text under the state, not in the
         // red card. Red is for things you must act on.
@@ -119,6 +149,19 @@ fun StatusTab(s: NodeState, raw: String, note: String = "",
                 ?: o?.optString("balance")?.ifEmpty { null }
             InfoRow("Balance", balance ?: "—",
                     if (balance != null) LogosColors.white else LogosColors.gray400)
+
+            // Only when there is NOTHING to show. The module keeps the last good figure and
+            // reports why the latest refresh failed, so both were rendered at once —
+            // "100M LGO" directly above "Balance unavailable: Unknown wallet address",
+            // which contradict each other. A stale figure plus a reason is a *stale* state,
+            // not an unavailable one; if we have a number, show the number.
+            if (balance == null) {
+                o?.optString("balanceError")?.takeIf { it.isNotEmpty() && s.reachable }?.let {
+                    Text("Balance unavailable: $it",
+                         style = MaterialTheme.typography.labelSmall,
+                         color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+            }
         }
 
         Row(horizontalArrangement = Arrangement.spacedBy(12.dp), modifier = Modifier.fillMaxWidth()) {
@@ -138,21 +181,16 @@ fun StatusTab(s: NodeState, raw: String, note: String = "",
                           else LogosColors.gray400)
         }
 
-        o?.optString("balanceError")?.takeIf { it.isNotEmpty() }?.let {
-            Text("Balance unavailable: $it",
-                 style = MaterialTheme.typography.labelSmall,
-                 color = MaterialTheme.colorScheme.onSurfaceVariant)
-        }
-
         // Identifiers get their own block with copy affordances — they are long hex that
         // nobody retypes, so the only useful interaction is copying.
-        if (o != null) {
-            Card(Modifier.fillMaxWidth()) {
-                Column(Modifier.padding(vertical = 4.dp)) {
-                    CopyRow("tip", o.optString("tip"))
-                    CopyRow("lib", o.optString("lib"))
-                    CopyRow("peer id", o.optString("peerId"))
-                }
+        // Always rendered. Hiding the whole card when disconnected made the page jump and
+        // said nothing; the rows now show "—" like every other field, so the layout is
+        // stable and the absence is explicit rather than implied by a gap.
+        Card(Modifier.fillMaxWidth()) {
+            Column(Modifier.padding(vertical = 4.dp)) {
+                CopyRow("tip", o?.optString("tip").orEmpty())
+                CopyRow("lib", o?.optString("lib").orEmpty())
+                CopyRow("peer id", o?.optString("peerId").orEmpty())
             }
         }
     }
@@ -170,6 +208,34 @@ fun StatusTab(s: NodeState, raw: String, note: String = "",
  * Red is reserved for an ACTUAL error reported by the node, not for "we could not reach
  * it" — those are different problems and colouring them the same trains you to ignore both.
  */
+/** In-flight action: orange like the other busy states, no copy button — there is nothing
+ *  to report, and offering to copy "starting node…" implies something went wrong. */
+@Composable
+private fun BusyCard(text: String, control: @Composable () -> Unit = {}) {
+    // Structurally IDENTICAL to NodeStateBlock — same alpha, same paddings, same single Row,
+    // same titleMedium — so swapping between them cannot change the block's height and the
+    // page does not jump every time you press start or stop.
+    Surface(color = LogosColors.orange300.copy(alpha = 0.12f),
+            shape = MaterialTheme.shapes.medium,
+            modifier = Modifier.fillMaxWidth()) {
+        Column(Modifier.padding(horizontal = 16.dp, vertical = 14.dp)) {
+            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                // The ONE spinner. The control renders none while busy — two spinners for a
+                // single action read as two things happening.
+                CircularProgressIndicator(Modifier.size(16.dp), strokeWidth = 2.dp,
+                                          color = LogosColors.orange300)
+                Spacer(Modifier.width(10.dp))
+                Text(text.replaceFirstChar { it.uppercase() },
+                     fontWeight = FontWeight.Bold,
+                     color = LogosColors.orange300,
+                     style = MaterialTheme.typography.titleMedium,
+                     modifier = Modifier.weight(1f))
+                control()
+            }
+        }
+    }
+}
+
 /**
  * Full-text, copyable error. No maxLines: a truncated error is worse than none, because
  * the tail is where the line/column and the actual cause live.
@@ -238,23 +304,36 @@ fun fmtLgo(raw: String): String {
 }
 
 @Composable
-private fun NodeStateBlock(s: NodeState, control: @Composable () -> Unit = {}) {
-    val err = s.error.takeIf { it.isNotEmpty() && s.reachable }
+private fun NodeStateBlock(s: NodeState, control: @Composable () -> Unit = {},
+                           stale: Boolean = false) {
     val (label, color) = when {
         // A 4xx is an ANSWER — the desktop heard us and refused. Showing the same spinner
         // as "no reply yet" hides a fixable problem behind an infinite wait.
         s.isRejected() -> "Not authorised — pair again" to LogosColors.red500
+        // Stale outranks every healthy label: we are not entitled to say "Online" from a
+        // reading we know is minutes old.
+        stale -> "Waiting for data…" to LogosColors.gray400
         !s.answered -> "Waiting for data…" to LogosColors.gray400
         // Alive but replaying its database. 1-click calls this exact state "Recovering
-        // chain" (NodeDashboardView _statusDisplay), so we use its words rather than
-        // inventing a second name for one thing. Accent orange, matching Bootstrapping —
-        // busy, not broken. Not the CTA orange: that one belongs to buttons.
-        s.isStarting() -> "Recovering chain" to LogosColors.orange300
-        err != null -> "Error" to LogosColors.red500
-        !s.reachable -> "Unknown" to LogosColors.gray400
+        // chain" (NodeDashboardView _statusDisplay), so we use its words. The block below
+        // (StatusTab) shows the "Replaying N stored blocks…" sub-line from s.notice, giving
+        // the same title+subtitle pair the desktop shows. Orange: busy, not broken.
+        s.isRecovering() -> "Recovering chain" to LogosColors.orange300
+        // The node reported an actual, actionable failure — the ONLY red node state. The
+        // module sets status=="Error" solely when the node was meant to be up and is down
+        // with a cause, so a deliberately stopped node can never land here.
+        s.status == "Error" && s.error.isNotEmpty() -> "Error" to LogosColors.red500
+        // The user asked for the node to be off, and it is. Neutral, never red — and the
+        // control still offers Start. This is what a phone-initiated stop must read as,
+        // instead of the old red "deploy config" card.
+        s.isStopped() -> "Node stopped" to LogosColors.gray400
         s.state.equals("Online", true) -> "Online" to LogosColors.green500
         s.state.equals("Bootstrapping", true) -> "Bootstrapping" to LogosColors.orange300
         s.status == "Running" -> s.state.ifEmpty { "Running" } to LogosColors.orange300
+        // Coming up, but not yet replaying and not yet answering. Its own honest word —
+        // NOT "Recovering chain" (there is nothing to replay).
+        s.isStarting() -> "Starting…" to LogosColors.orange300
+        !s.reachable -> "Unknown" to LogosColors.gray400
         else -> "Not Started" to LogosColors.red500
     }
     Surface(color = color.copy(alpha = 0.12f), shape = MaterialTheme.shapes.medium,
@@ -304,7 +383,10 @@ private fun Tile(label: String, value: String, m: Modifier = Modifier,
 
 @Composable
 private fun CopyRow(label: String, value: String) {
-    if (value.isEmpty()) return
+    // Empty renders as "—" rather than vanishing: a missing row is indistinguishable from a
+    // row that was never there, and dropping it mid-list shifts everything below.
+    val shown = value.ifEmpty { "—" }
+    val hasValue = value.isNotEmpty()
     val clip = LocalClipboardManager.current
     var copied by remember { mutableStateOf(false) }
     LaunchedEffect(copied) { if (copied) { delay(1400); copied = false } }
@@ -313,12 +395,17 @@ private fun CopyRow(label: String, value: String) {
         Column(Modifier.weight(1f)) {
             Text(label, style = MaterialTheme.typography.labelMedium,
                  color = MaterialTheme.colorScheme.onSurfaceVariant)
-            Text(value, fontFamily = FontFamily.Monospace,
+            Text(shown, fontFamily = FontFamily.Monospace,
                  style = MaterialTheme.typography.bodySmall,
+                 color = if (hasValue) LogosColors.white else LogosColors.gray400,
                  maxLines = 2, overflow = TextOverflow.Ellipsis)
         }
-        IconButton(onClick = { clip.setText(AnnotatedString(value)); copied = true }) {
-            CopyGlyph(if (copied) LogosColors.green500 else LogosColors.gray400)
+        // Nothing to copy when there is no value — a live-looking copy button on a dash
+        // invites a tap that silently puts "—" on the clipboard.
+        IconButton(enabled = hasValue,
+                   onClick = { clip.setText(AnnotatedString(value)); copied = true }) {
+            CopyGlyph(if (copied) LogosColors.green500
+                      else if (hasValue) LogosColors.gray400 else LogosColors.gray320)
         }
     }
 }

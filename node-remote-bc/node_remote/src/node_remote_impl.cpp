@@ -70,7 +70,10 @@ NodeRemoteImpl::NodeRemoteImpl()
         return QByteArray::fromStdString(getNodeStatus());
     });
     m_http->setStartHandler([this] {
-        return QByteArray::fromStdString(startNode("", "logos.test"));
+        // Empty deployment → startNode resolves it from the shared config (matches the
+        // desktop). Do NOT hardcode a name here: blockchain_module treats the deployment
+        // arg as a FILE path, so a literal like "logos.test" fails to parse.
+        return QByteArray::fromStdString(startNode("", ""));
     });
     m_http->setStopHandler([this] {
         return QByteArray::fromStdString(stopNode());
@@ -195,6 +198,18 @@ std::string NodeRemoteImpl::getNodeStatus()
     // backtrace and why "balance: begin" with no matching "end" preceded every one.
     {
         QMutexLocker lk(&m_balanceMu);
+        // Reachability drives the balance timer's decision to spend an IPC call at all.
+        // Recorded here because this runs on every phone poll.
+        const bool reachable = o.value("reachable").toBool();
+        if (m_lastReachable && !reachable) {
+            // The node just went away: drop the cached figure. It stops /v1/status
+            // reporting a balance for a node that is not running, AND it means the next
+            // time the node comes up the timer sees an EMPTY balance and fetches at once
+            // rather than waiting out the 30s steady-state backoff.
+            m_balanceRaw.clear();
+            m_balance.clear();
+        }
+        m_lastReachable = reachable;
         if (!m_primaryAddress.isEmpty()) o["primaryAddress"] = m_primaryAddress;
         if (!m_balanceRaw.isEmpty())     o["balanceRaw"] = m_balanceRaw;
         if (!m_balance.isEmpty())        o["balance"] = m_balance;
@@ -214,6 +229,30 @@ void NodeRemoteImpl::refreshBalance()
     // two seconds after a balance tick, with blocks arriving throughout. This guard stops
     // us stacking a second wallet call inside the first; it does NOT make the platform's
     // sync IPC reentrant, so it is a mitigation, not a proof. See docs/TESTING.md.
+    // Spend an IPC call only when it can achieve something:
+    //   node down         -> nothing at all (the RPC would just fail on every tick)
+    //   up, no figure yet -> every tick (3s), so the balance lands right after a start
+    //   up, have a figure -> at most every 30s
+    //
+    // The timer fires at 3s and THIS decides. Making the timer fast and the work
+    // conditional keeps every wallet IPC on the one thread that may safely do it, which is
+    // what the SIGSEGV fix requires.
+    bool reachable = false;
+    bool haveFigure = false;
+    {
+        QMutexLocker lk(&m_balanceMu);
+        reachable = m_lastReachable;
+        haveFigure = !m_balanceRaw.isEmpty();
+    }
+    if (!reachable) return;
+    const qint64 nowSecs = QDateTime::currentSecsSinceEpoch();
+    if (haveFigure && (nowSecs - m_lastBalanceAt) < 30) return;
+
+    // RESTORED. This check was lost when the diagnostic tracing was stripped: the guard had
+    // been written as one line, `if (m_ipcBusy) { NR_TRACE(...); return; }`, and the filter
+    // that removed every NR_TRACE line took the whole thing. m_ipcBusy has been set and
+    // never read since 033525f — the re-entrancy guard was dead code.
+    if (m_ipcBusy) return;
     m_ipcBusy = true;
     struct Clear { bool& b; ~Clear() { b = false; } } clear{m_ipcBusy};
 
@@ -261,6 +300,7 @@ void NodeRemoteImpl::refreshBalance()
         // Kept for older clients; the phone formats from balanceRaw with 1-click's algorithm.
         if (okNum) m_balance = QString::number(v / 10000.0, 'f', 4);
     }
+    m_lastBalanceAt = nowSecs;
 }
 
 void NodeRemoteImpl::onContextReady()
@@ -289,9 +329,11 @@ void NodeRemoteImpl::onContextReady()
     if (!m_balanceTimer) {
         m_balanceTimer = new QTimer(m_onion);
         QObject::connect(m_balanceTimer, &QTimer::timeout, m_onion, [this] { refreshBalance(); });
-        // 30s, not 15: every tick is a window for the reentrancy above, and a balance
-        // that is half a minute stale costs nothing.
-        m_balanceTimer->start(30000);
+        // 3s TICK, but refreshBalance() decides whether to act — see the guards there.
+        // A bare 30s timer meant the balance could take half a minute to appear after a
+        // start, because nothing observed the node coming up; a bare 3s timer would hammer
+        // the wallet RPC against a stopped node forever.
+        m_balanceTimer->start(3000);
         QTimer::singleShot(3000, m_onion, [this] { refreshBalance(); });
     }
 }
@@ -305,11 +347,47 @@ std::string NodeRemoteImpl::wipeDatabase()
     //  2. It removes ONLY db/state/logs — keystore.yaml and user_config.yaml stay, so
     //     the wallet keys and settings survive. The docs tell operators to delete the
     //     whole module_data dir, which loses their keys.
+    // GUARD: refuse unless the node is BOTH deliberately stopped AND not answering.
+    //
+    // `reachable` alone was not enough, and the gap is the dangerous one: a node that is
+    // REPLAYING has not brought its API up, so reachable is false — while the process is
+    // very much alive with open RocksDB handles. Deleting db/ underneath it is how you
+    // corrupt a database. logos_node_1click's resetChainState() refuses on
+    // Running || Starting || Stopping; this was lifted from it and narrowed to one
+    // condition, losing exactly that window.
+    //
+    // Intent is the missing half: it says whether the user wants the node up, which covers
+    // starting and replaying, neither of which is observable through `reachable`.
+    //
+    // The Android UI already greys the button (nodeRunning = reachable || starting ||
+    // recovering) but that is CLIENT-side: this route is reachable over the onion with a
+    // token, an older app build has no such gate, and a retry can land after the state
+    // changed. A destructive action must refuse on its own.
     const QByteArray statusRaw = g_probe->statusJson();
     const QJsonObject st = QJsonDocument::fromJson(statusRaw).object();
     if (st.value("reachable").toBool()) {
         r["ok"] = false;
+        r["code"] = "node_running";
         r["error"] = "Stop the node before wiping the database.";
+        return dump(r);
+    }
+    // Refuse only while the PROCESS is alive. The derived status already distinguishes the
+    // three down-states, and they are not equivalent:
+    //
+    //   Recovering / Starting  process alive, API not up yet  -> REFUSE (the real hazard)
+    //   Error                  process died with a cause      -> ALLOW
+    //   Stopped                user stopped it                -> ALLOW
+    //
+    // Error must be allowed: recovering a node wedged after an unclean shutdown is the
+    // PRIMARY reason this action exists (logos_node_1click's resetChainState says exactly
+    // that). An earlier version of this guard required intent==Stopped, which reads as
+    // "started" in the Error state — so it blocked the one case the feature is for.
+    const QString derived = st.value("status").toString();
+    if (derived == QLatin1String("Recovering") || derived == QLatin1String("Starting")) {
+        r["ok"] = false;
+        r["code"] = "node_not_stopped";
+        r["error"] = "The node is starting or replaying its database. Stop it first — "
+                     "wiping now would delete the database out from under a live process.";
         return dump(r);
     }
 
@@ -333,6 +411,12 @@ std::string NodeRemoteImpl::wipeDatabase()
         r["error"] = QStringLiteral("Could not remove: %1").arg(failed.join(", "));
         return dump(r);
     }
+    // Record the resulting state. logos_node_1click does the equivalent (setStatus(NotStarted)).
+    // Without it the intent stayed whatever it was, and since the wipe just deleted logs/
+    // there is no error to scrape either — so statusJson() reported "Starting" and the phone
+    // showed "Starting…" indefinitely for a node that was never started.
+    g_probe->writeIntent(NodeProbe::Intent::Stopped);
+
     r["ok"] = true;
     r["removed"] = removed.join(", ");
     return dump(r);
@@ -342,6 +426,19 @@ std::string NodeRemoteImpl::regenerateConfig(const std::string& initialPeers)
 {
     QJsonObject r;
     if (!isContextReady()) { r["ok"] = false; r["error"] = "module not ready"; return dump(r); }
+
+    // Same guard as wipeDatabase(), and for the same reason: this rewrites the file the node
+    // reads its identity from. It previously had NO state check at all — server-side it
+    // would happily rewrite the config of a running node.
+    const QJsonObject st = QJsonDocument::fromJson(g_probe->statusJson()).object();
+    const QString derived = st.value("status").toString();
+    if (st.value("reachable").toBool()
+        || derived == QLatin1String("Recovering") || derived == QLatin1String("Starting")) {
+        r["ok"] = false;
+        r["code"] = "node_not_stopped";
+        r["error"] = "Stop the node before regenerating its config.";
+        return dump(r);
+    }
 
     const QString cfg = g_probe->userConfigPath();
     if (cfg.isEmpty()) {
@@ -373,8 +470,52 @@ std::string NodeRemoteImpl::regenerateConfig(const std::string& initialPeers)
 
     r["ok"] = res.success;
     r["backup"] = backup;
-    if (!res.success) r["error"] = QString::fromStdString(res.error);
+    if (!res.success) {
+        r["error"] = QString::fromStdString(res.error);
+        return dump(r);
+    }
+
+    // REPORT WHAT MOVED. generate_user_config only inserts the keys it is GIVEN, and we pass
+    // two — so everything the operator customised reverts to module defaults. The most
+    // consequential of those is the leader identity: user_config.yaml carries
+    // cryptarchia.leader…funding_pk, and whether the module preserves or re-mints it is not
+    // knowable from here. Returning the before/after lets the caller SEE it rather than
+    // trust a comment, and the backup path is right there if it changed.
+    const QStringList before = configIdentityKeys(backup);
+    const QStringList after  = configIdentityKeys(cfg);
+    if (before != after) {
+        r["identityChanged"] = true;
+        r["identityBefore"] = before.join(", ");
+        r["identityAfter"] = after.join(", ");
+    } else if (!before.isEmpty()) {
+        r["identityChanged"] = false;
+    }
     return dump(r);
+}
+
+// The identity-bearing values in user_config.yaml, in file order. Deliberately a plain
+// line scan and not a YAML parse: the module owns this file's schema, we only need to know
+// whether these specific values survived a regenerate, and a dependency-free comparison
+// cannot itself break the regenerate path.
+QStringList NodeRemoteImpl::configIdentityKeys(const QString& path)
+{
+    static const QStringList kKeys{QStringLiteral("funding_pk"),
+                                   QStringLiteral("non_ephemeral_signing_key_id"),
+                                   QStringLiteral("secret_key_kms_id")};
+    QStringList out;
+    QFile f(path);
+    if (!f.open(QIODevice::ReadOnly | QIODevice::Text)) return out;
+    const QStringList lines = QString::fromUtf8(f.readAll()).split(QLatin1Char('\n'));
+    f.close();
+    for (const QString& ln : lines) {
+        for (const QString& k : kKeys) {
+            const int i = ln.indexOf(k + QLatin1Char(':'));
+            if (i < 0) continue;
+            out << ln.mid(i).trimmed();
+            break;
+        }
+    }
+    return out;
 }
 
 std::string NodeRemoteImpl::getBlocks()
@@ -407,9 +548,48 @@ std::string NodeRemoteImpl::startNode(const std::string& configPath,
         return dump(r);
     }
 
-    const StdLogosResult res = modules().blockchain_module.start(cfg, deployment);
-    r["ok"] = res.success;
-    if (!res.success) r["error"] = QString::fromStdString(res.error);
+    // Resolve the deployment the SAME way logos-blockchain-ui does: the persisted
+    // deploymentConfigPath, which is normally EMPTY (the node's default embedded deployment).
+    // The /v1/start route used to hardcode "logos.test", which blockchain_module then tried
+    // to open as a file → "Could not parse deployment file: No such file or directory", so a
+    // phone-initiated start failed on any node configured with the default deployment.
+    const std::string dep = deployment.empty()
+                                ? g_probe->deploymentConfigPath().toStdString()
+                                : deployment;
+
+    const StdLogosResult res = modules().blockchain_module.start(cfg, dep);
+    if (res.success) {
+        // Record the user's intent in the shared store so the desktop agrees the node is
+        // meant to be up. See node_probe.cpp readIntent()/writeIntent().
+        g_probe->writeIntent(NodeProbe::Intent::Started);
+        r["ok"] = true;
+        r["code"] = "started";
+    } else {
+        const QString err = QString::fromStdString(res.error);
+        if (err.contains(QLatin1String("already running"), Qt::CaseInsensitive)) {
+            // Idempotent: the node is already up, which is what the caller wanted.
+            g_probe->writeIntent(NodeProbe::Intent::Started);
+            r["ok"] = true;
+            r["code"] = "already_running";
+        } else if (err.isEmpty()
+                   || err.contains(QLatin1String("Call failed"), Qt::CaseInsensitive)
+                   || err.contains(QLatin1String("timed out"), Qt::CaseInsensitive)
+                   || err.contains(QLatin1String("no reply"), Qt::CaseInsensitive)) {
+            // No CLEAN reply from the start RPC. On this node that means the node is still
+            // coming up — a slow chain recovery routinely outlives the RPC deadline — NOT a
+            // failure. logos-blockchain-ui handles this identically: it stays in Starting and
+            // lets the liveness poll confirm (logos_node_1click_backend.cpp:917-920). Report
+            // it as "starting" (ok, so the phone shows Starting — never a red error); the
+            // /v1/status poll then resolves it to Running, or to a real Error from the log.
+            g_probe->writeIntent(NodeProbe::Intent::Started);
+            r["ok"] = true;
+            r["code"] = "starting";
+        } else {
+            r["ok"] = false;
+            r["error"] = err;
+            r["code"] = "start_failed";
+        }
+    }
     r["configPath"] = QString::fromStdString(cfg);
     return dump(r);
 }
@@ -418,8 +598,49 @@ std::string NodeRemoteImpl::stopNode()
 {
     const StdLogosResult res = modules().blockchain_module.stop();
     QJsonObject r;
-    r["ok"] = res.success;
-    if (!res.success) r["error"] = QString::fromStdString(res.error);
+    if (res.success) {
+        g_probe->writeIntent(NodeProbe::Intent::Stopped);
+        r["ok"] = true;
+        r["code"] = "stopped";
+    } else {
+        const QString err = QString::fromStdString(res.error);
+        if (err.contains(QLatin1String("not running"), Qt::CaseInsensitive)) {
+            // VERIFY before believing it. blockchain_module answers "not running" for two
+            // very different situations, and treating them alike reports a false success:
+            //
+            //   (a) the node really is stopped        -> idempotent success
+            //   (b) the node is RUNNING but was started by a DIFFERENT blockchain_module
+            //       client (e.g. the 1-click desktop UI). Node lifecycle is INSTANCE-BOUND,
+            //       the same way the wallet RPCs are, so this module cannot see — or stop —
+            //       a node it did not start.
+            //
+            // Observed live: /v1/stop returned {"ok":true,"code":"already_stopped"} while
+            // the node was serving at height 23018. The caller trusted that success and
+            // waited for a stop that was never attempted. Worse, it wrote intent=stopped
+            // for a running node, which the reachability self-heal then flipped back to
+            // started — so the two fought each other every poll.
+            const QJsonObject st = QJsonDocument::fromJson(g_probe->statusJson()).object();
+            if (st.value("reachable").toBool()) {
+                r["ok"] = false;
+                r["code"] = "not_owned";
+                r["error"] = QStringLiteral(
+                    "This node was started outside Node Remote, so it can only be stopped "
+                    "where it was started — use Stop node in the Blockchain node app on the "
+                    "desktop.");
+            } else {
+                // Genuinely stopped. Idempotent: stopping an already-stopped node is
+                // success, not an error — this is what surfaced the scary "deploy config"
+                // card on the phone.
+                g_probe->writeIntent(NodeProbe::Intent::Stopped);
+                r["ok"] = true;
+                r["code"] = "already_stopped";
+            }
+        } else {
+            r["ok"] = false;
+            r["error"] = err;
+            r["code"] = "stop_failed";
+        }
+    }
     return dump(r);
 }
 
@@ -433,6 +654,40 @@ std::string NodeRemoteImpl::beginPairing(const std::string& label)
         // publishing. The user would scan it, fail, and have no idea why.
         r["ok"] = false;
         r["error"] = "onion not ready — wait for the descriptor to publish";
+        return dump(r);
+    }
+
+    // REFUSE TO CLOBBER A LIVE PAIRING.
+    //
+    // This function is destructive and did not say so. It mints a NEW x25519 keypair,
+    // TRUNCATES authorized_clients/<label>.auth over the old public key, and rotates the
+    // bearer token. A phone that is already paired holds the OLD private key and the OLD
+    // token, and nothing tells it otherwise — so after a stray call it can no longer
+    // decrypt the descriptor, every request times out, last_seen stays NEVER, and both
+    // ends sit there looking healthy. There is no error to observe because from tor's
+    // point of view an un-authorized client is indistinguishable from no client at all.
+    //
+    // That is not hypothetical: a rotation at 17:58:53 left phone.auth holding
+    // 76a2yia3… while the phone still held the private half of 4swheovo…, and the only
+    // way to see it was to derive the public key from the phone's stored key by hand.
+    //
+    // Rotation is still available — it is just spelled out: revoke, then pair. "Unpair"
+    // already does the revoke, so the destructive step is one the user asks for by name
+    // rather than one a poll loop can perform by accident.
+    // The test is "has a device actually USED this key", not "does a key exist". A key is
+    // written the instant the QR is drawn, so `authorizedClients()` is non-empty for every
+    // code still on screen; refusing on that alone would strand the user with an expired
+    // code and no way to mint another. An unscanned key belongs to nobody and is free to
+    // replace. lastAuthedAt() > 0 means a real device completed an authenticated request
+    // with it — that is the one worth protecting.
+    const QStringList existing = m_onion->authorizedClients();
+    if (!existing.isEmpty() && m_http && m_http->lastAuthedAt() > 0) {
+        r["ok"] = false;
+        r["code"] = "already_paired";
+        r["clients"] = QJsonArray::fromStringList(existing);
+        r["error"] = QStringLiteral("Already paired with %1. Unpair first to pair a "
+                                    "different device — issuing a new code would silently "
+                                    "cut off the paired one.").arg(existing.join(", "));
         return dump(r);
     }
 
@@ -624,6 +879,10 @@ std::string NodeRemoteImpl::revokeClient(const std::string& name)
 {
     QJsonObject r;
     r["ok"] = m_onion->revokeClient(QString::fromStdString(name));
+    // Hard reload: tor must drop the revoked client's circuits and republish a descriptor
+    // that key cannot decrypt. Without it the revocation is only as strong as the bearer
+    // token, and the onion stays reachable to the device that was just unpaired.
+    if (r["ok"].toBool()) m_onion->reload(/*hard=*/true);
     // Last device gone: drop the token and last-seen too, so the next launch does not
     // auto-start a surface for a device that can no longer reach it, and the pane offers
     // pairing rather than claiming a phone it revoked.

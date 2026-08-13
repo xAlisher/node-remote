@@ -46,6 +46,18 @@ Item {
     readonly property string githubUrl: "https://github.com/xAlisher/node-remote/releases/latest"
     property int sourceTab: 0        // 0 = F-Droid, 1 = GitHub
 
+    // "Get the app" matters once. After the first successful pairing it is just noise above
+    // the thing you actually came for, so it collapses itself — once. The latch means a user
+    // who re-opens it keeps it open; auto-collapsing on every pairing would fight them.
+    property bool appOpen: true
+    property bool appAutoCollapsed: false
+    onPairedChanged: {
+        if (root.paired && !root.appAutoCollapsed) {
+            root.appOpen = false
+            root.appAutoCollapsed = true
+        }
+    }
+
     readonly property string sourceUrl:  sourceTab === 0 ? fdroidUrl : githubUrl
     readonly property string sourceHint: sourceTab === 0
         ? "Scan in the F-Droid app to add the repo, then install Node Remote. Updates arrive automatically."
@@ -65,14 +77,22 @@ Item {
     property bool   everConnected: false    // a phone has authenticated at least once
     property int    lastSeenSecs:  -1       // -1 = never
 
-    // "Paired" must mean a device SPOKE to us, not that a key exists for one — the
-    // client-auth key is written when the QR is rendered, so clients.length > 0 is true the
-    // instant the code appears, which hid the QR before it could be scanned.
+    // THREE INDEPENDENT FACTS, deliberately not collapsed into one:
     //
-    // It uses everConnected, NOT connected: once pairing has succeeded the pane must stop
-    // showing the QR permanently. Whether the phone is reachable this second is a separate
-    // question, answered by `connected` in the label below.
-    readonly property bool paired: root.everConnected
+    //   paired     an authorised client key exists ON DISK. Ground truth for "is a device
+    //              allowed in", and the only thing [Pair]/[Unpair] act on.
+    //   connected  a phone authenticated inside the staleness window. Live link, now.
+    //   everConnected  one has authenticated at least once this session.
+    //
+    // paired used to be derived from everConnected, because keying it off the key file hid
+    // the QR the instant the key was minted. That coupling produced a state the pane could
+    // not escape: after a revoke, authorized_clients was empty (NOT paired) while
+    // lastAuthedAt was still recent (paired), so the pane claimed paired, hid the Pair
+    // control, and offered no way back — no QR, no error, nothing.
+    //
+    // With pairing an EXPLICIT action, the original problem disappears: the QR is shown
+    // because a pairing is in progress (pairUri set), not because we are "not paired".
+    readonly property bool paired: root.clients.length > 0
 
     function seenAgo() {
         if (root.lastSeenSecs < 0) return ""
@@ -105,6 +125,12 @@ Item {
         root.onion     = info.onion || "";
         root.clients   = info.clients || [];
         root.connected     = info.connected === true;
+        // Retire the code the moment the phone completes the handshake. It was previously
+        // left on screen until it expired, so a successful pairing still showed a live QR —
+        // which reads as "it did not work" and invites a re-scan of a code that is spent.
+        if (root.connected && root.pairUri !== "") {
+            root.pairUri = ""; root.sas = ""; root.expiresAt = 0; root.secsLeft = 0;
+        }
         root.everConnected = info.everConnected === true;
         root.lastSeenSecs  = (info.lastSeenSecs === undefined) ? -1 : info.lastSeenSecs;
         if (info.error) root.note = info.error;
@@ -140,7 +166,12 @@ Item {
             if (inFlight) return           // re-entrancy guard: callModule blocks
             inFlight = true
             refresh()
-            if (root.ready && root.busy && root.pairUri === "") beginPairing()
+            // `&& !root.paired` is the important clause. beginPairing() ROTATES the
+            // client key, so this line — which fires on a timer, with no user involved —
+            // could silently cut off an already-paired phone. It exists to auto-issue a
+            // code once the onion finishes publishing after a fresh start; that is the
+            // unpaired case and only the unpaired case.
+            if (root.ready && root.busy && root.pairUri === "" && !root.paired) beginPairing()
             inFlight = false
         }
     }
@@ -153,7 +184,24 @@ Item {
         refresh()
     }
 
-    function beginPairing() {
+    // Rotation is deliberately TWO steps: revoke, then pair. The module refuses to issue a
+    // code while a device is paired, because doing so invalidates that device with no
+    // signal at either end. `replaceExisting` is the explicit consent for that.
+    function beginPairing(replaceExisting) {
+        if (replaceExisting === true) {
+            for (var i = 0; i < root.clients.length; ++i)
+                logos.callModule("node_remote", "revokeClient", [root.clients[i]])
+            root.clients = []
+            // Revoking RESTARTS tor — deliberately, so the revoked device loses its
+            // circuits rather than merely being turned away by the token. The onion is
+            // therefore not ready, and pairing right now returns "onion not ready".
+            // Hand off to the poll loop: `paired` is false and `busy` is true, so it mints
+            // the code the moment the descriptor republishes.
+            root.busy = true
+            root.note = "Unpaired. Republishing your onion — a new code appears shortly."
+            refresh()
+            return
+        }
         var p = parse(logos.callModule("node_remote", "beginPairing", ["phone"]))
         if (p.ok !== true) { root.note = p.error || "pairing failed"; root.busy = false; return }
         root.pairUri = p.uri || ""
@@ -173,7 +221,7 @@ Item {
         root.pairUri = ""; root.sas = ""; root.token = ""; root.onion = ""; root.ready = false
         root.expiresAt = 0; root.secsLeft = 0
         root.connected = false
-        root.note = "Disconnected. The onion no longer answers that device."
+        root.note = "Unpaired. The onion no longer answers that device."
         refresh()
     }
 
@@ -219,10 +267,35 @@ Item {
                     anchors.margins: 14
                     spacing: 8
 
-                    Label {
-                        text: "1. Get Node Remote app"
-                        color: root.textCol; font.pixelSize: 15; font.bold: true
+                    // Disclosure header: the whole row toggles, not just the triangle —
+                    // a 12px hit target is a miss waiting to happen.
+                    RowLayout {
+                        Layout.fillWidth: true
+                        spacing: 8
+                        Label {
+                            text: root.appOpen ? "\u25BE" : "\u25B8"   // ▾ open, ▸ collapsed
+                            color: root.textDim
+                            font.pixelSize: 13
+                        }
+                        Label {
+                            text: "1. Get Node Remote app"
+                            color: root.textCol; font.pixelSize: 15; font.bold: true
+                            Layout.fillWidth: true
+                        }
+                        MouseArea {
+                            anchors.fill: parent
+                            cursorShape: Qt.PointingHandCursor
+                            onClicked: root.appOpen = !root.appOpen
+                        }
                     }
+
+                    // The body. ONE wrapper with visible bound to appOpen, so the parent
+                    // Rectangle's implicitHeight (appCol.implicitHeight + 28) shrinks with
+                    // it — hiding children individually would leave the card its full height.
+                    ColumnLayout {
+                    visible: root.appOpen
+                    Layout.fillWidth: true
+                    spacing: 8
 
                     // Logos tabs — label + sliding underline, no button chrome. Matches
                     // the design system's LogosTabBar, which is what the 1-click node view
@@ -271,6 +344,7 @@ Item {
                         color: root.textDim; font.pixelSize: 11; font.italic: true
                         Layout.fillWidth: true; wrapMode: Text.WordWrap
                     }
+                    }   // end collapsible body
                 }
             }
 
@@ -291,10 +365,8 @@ Item {
                     RowLayout {
                         Layout.fillWidth: true
                         Label {
-                            text: !root.paired ? "2. Pair your phone"
-                                               : (root.connected ? "Connected" : "Paired — not connected")
-                            color: !root.paired ? root.textCol
-                                                : (root.connected ? root.success : root.textDim)
+                            text: !root.paired ? "2. Pair your phone" : "Paired"
+                            color: root.textCol
                             font.pixelSize: 15; font.bold: true
                             Layout.fillWidth: true
                         }
@@ -303,6 +375,22 @@ Item {
                             visible: root.busy
                             implicitWidth: 22; implicitHeight: 22
                         }
+                    }
+
+                    // CONNECTION is a separate line from PAIRING, because they are separate
+                    // facts: a paired device can be switched off, and an unpaired one cannot
+                    // be connected at all. Collapsing them is what produced a pane that said
+                    // "paired" while the key had been revoked.
+                    Label {
+                        visible: root.paired
+                        text: root.connected
+                                  ? "Connected"
+                                  : (root.lastSeenSecs >= 0
+                                        ? "Connecting…  ·  last seen " + root.seenAgo()
+                                        : "Connecting…")
+                        color: root.connected ? root.success : root.textDim
+                        font.pixelSize: 13
+                        Layout.fillWidth: true
                     }
 
                     // The module is gone. Say so instead of showing a pairing flow that
@@ -332,6 +420,18 @@ Item {
                         }
                     }
 
+                    // Say what the wait is for, rather than showing an empty gap between
+                    // pressing Pair and the code appearing.
+                    Label {
+                        // Suppressed while `note` is set: startRemote() already puts its own
+                        // "publishing" line up, and two of them at once reads as a stutter.
+                        visible: root.pairUri !== "" && !root.ready && !root.connected
+                                 && root.note === ""
+                        text: "Publishing your onion address — the code appears in a moment."
+                        color: root.textDim; font.pixelSize: 12
+                        Layout.fillWidth: true; wrapMode: Text.WordWrap
+                    }
+
                     Label {
                         visible: root.note !== "" && !root.moduleDead
                         text: root.note
@@ -348,10 +448,9 @@ Item {
                             // The module cannot see the app's state — the phone pushes no
                             // disconnect — so say when we last HEARD from it rather than
                             // implying a live link we cannot observe.
+                            // Device + address only. "last seen" lives on the connection
+                            // line above; printing it twice made one fact look like two.
                             text: root.clients.join(", ") +
-                                  (root.connected ? "" : (root.lastSeenSecs >= 0
-                                       ? "  ·  last seen " + root.seenAgo()
-                                       : "  ·  never connected")) +
                                   (root.onion ? "  ·  " + root.onion.substring(0, 12) + "…onion" : "")
                             color: root.textDim; font.pixelSize: 12
                             Layout.fillWidth: true; elide: Text.ElideRight
@@ -379,9 +478,19 @@ Item {
                     Button {
                         // Also shown once the code expires — otherwise the pane strands the
                         // user with a dead QR and no way to ask for another.
-                        visible: !root.moduleDead && !root.paired && !root.busy
-                                 && (root.pairUri === "" || root.secsLeft === 0)
-                        text: root.pairUri === "" ? "Show QR" : "New code"
+                        // Pair and Unpair are mutually exclusive: showing both at once asks
+                        // the user to work out which applies. Re-pairing is Unpair then Pair.
+                        //
+                        // The second clause keeps "New code" reachable DURING a pairing: the
+                        // key is written the moment the QR is drawn, so `paired` is already
+                        // true while the code is on screen — without it an expired code would
+                        // leave no way to mint another.
+                        visible: !root.moduleDead && !root.busy
+                                 && (!root.paired
+                                     || (root.pairUri !== "" && root.secsLeft === 0))
+                        // "Pair" is now an explicit action rather than something the pane
+                        // infers. "New code" only while a code is on screen and has expired.
+                        text: root.pairUri === "" ? "Pair" : "New code"
                         // The onion is already up on a retry; only the code needs reminting.
                         onClicked: root.ready ? root.beginPairing() : root.startRemote()
                         contentItem: Label {
@@ -398,7 +507,23 @@ Item {
 
                     // The QR itself, plus the code the phone must match.
                     ColumnLayout {
-                        visible: root.pairUri !== "" && !root.paired
+                        // Gate on CONNECTED, not paired. `paired` means "a key exists on
+                        // disk", and beginPairing() writes that key the instant the code is
+                        // drawn — so gating on !paired hid the QR before it could be
+                        // scanned. That was the original bug; redefining `paired` for the
+                        // Pair/Unpair split reintroduced it here, because only one side of
+                        // the pair was updated.
+                        //
+                        // The code stays up until a phone actually authenticates, which is
+                        // the only event that means the pairing WORKED.
+                        // ALSO gated on `ready`. beginPairing() calls reload(), which
+                        // RESTARTS tor so it picks up the new authorized_clients entry — and
+                        // a restarted onion needs ~30-60s to republish its descriptor. The QR
+                        // used to appear the instant the key was minted, so every scan landed
+                        // in the window where the onion is unreachable; the phone then failed
+                        // with "SOCKS server general failure", and with a 90s connect timeout
+                        // it looked like nothing was happening at all.
+                        visible: root.pairUri !== "" && !root.connected && root.ready
                         Layout.fillWidth: true
                         spacing: 10
 
@@ -466,8 +591,10 @@ Item {
                     }
 
                     Button {
-                        visible: root.paired || root.pairUri !== ""
-                        text: "Disconnect"
+                        // Named for what it does to the PAIRING (revokes the key), not for
+                        // what it does to the connection. Only shown when a key exists.
+                        visible: root.paired
+                        text: "Unpair"
                         onClicked: root.disconnectAll()
                         contentItem: Label {
                             text: parent.text; color: root.danger

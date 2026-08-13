@@ -17,6 +17,7 @@ Lucide is stroke art on a 24x24 grid with stroke-width 2, round caps and joins �
 renderer scales the stroke with the canvas rather than drawing hairlines.
 """
 import math
+import os
 from PIL import Image, ImageDraw
 
 # lucide blocks:
@@ -58,7 +59,15 @@ def rounded_rect(x, y, w, h, r):
     return pts
 
 
-def render(size, colour, coverage, supersample=8):
+def grid_2x2_polys():
+    """lucide `grid-2x2`: a rounded 18x18 frame with a centred cross.
+       <path d="M12 3v18"/> <path d="M3 12h18"/> <rect x=3 y=3 w=18 h=18 rx=2/>"""
+    return [rounded_rect(3, 3, 18, 18, 2),
+            [(12, 3), (12, 21)],
+            [(3, 12), (21, 12)]]
+
+
+def render(size, colour, coverage, supersample=8, polys=None):
     """Draw the glyph centred, occupying `coverage` of `size`. Supersampled for clean joins."""
     S = size * supersample
     img = Image.new("RGBA", (S, S), (0, 0, 0, 0))
@@ -72,7 +81,7 @@ def render(size, colour, coverage, supersample=8):
     def T(pts):
         return [(off + x * scale, off + y * scale) for x, y in pts]
 
-    for poly in (blocks_polyline(), rounded_rect(14, 2, 8, 8, 1)):
+    for poly in (polys if polys is not None else (blocks_polyline(), rounded_rect(14, 2, 8, 8, 1))):
         pts = T(poly)
         d.line(pts, fill=colour, width=w, joint="curve")
         # joint="curve" does not round the two free ENDS, and lucide is stroke-linecap
@@ -116,3 +125,14 @@ for name, px in [("mdpi", 48), ("hdpi", 72), ("xhdpi", 96),
     rnd.save(f"{d}/ic_launcher_round.png")
 
 print("icons written")
+
+
+# ── Blockchain node (logos-blockchain-ui) module icon ───────────────────────────
+# lucide `grid-2x2`, same treatment as Node Remote's `blocks`: 64x64, transparent,
+# near-white. The two panes sit side by side in Basecamp, so they are generated from one
+# script rather than each being drawn its own way — the previous icon was 28x28, which
+# rendered soft next to a 64x64 neighbour.
+_click = "/home/alisher/basecamp/modules/logos-blockchain-ui/src/icons/blockchain.png"
+if os.path.isdir(os.path.dirname(_click)):
+    render(64, (255, 245, 245, 255), 0.72, polys=grid_2x2_polys()).save(_click)
+    print("blockchain node icon written:", _click)

@@ -14,7 +14,7 @@ data class NodeState(
     val answered: Boolean = false,
     /** The desktop reached the NODE's API. Only meaningful when [answered]. */
     val reachable: Boolean = false,
-    val status: String = "",        // Running | Starting | Stopped | NotRunning | …
+    val status: String = "",        // Running | Starting | Recovering | Bootstrapping | Stopped | Error
     val state: String = "",         // Online | Bootstrapping
     val phase: String = "",
     val height: Long = -1,
@@ -27,11 +27,17 @@ data class NodeState(
      * it means the node is ALIVE, so offering "Start node" would be wrong.
      */
     val notice: String = "",
+    /** Shared binary user intent as the desktop last recorded it: started | stopped | unknown. */
+    val intent: String = "",
+    /** Active chain recovery (block replay). [recoveryBlocks] is 0 when the count is unknown. */
+    val recovering: Boolean = false,
+    val recoveryBlocks: Int = 0,
     val atMillis: Long = 0,
 ) {
     companion object {
         fun parse(json: String, now: Long): NodeState = runCatching {
             val o = JSONObject(json)
+            val rec = o.optJSONObject("recovering")
             NodeState(
                 answered = true,
                 reachable = o.optBoolean("reachable", false),
@@ -43,6 +49,9 @@ data class NodeState(
                 peers = o.optInt("peers", -1),
                 error = o.optString("error"),
                 notice = o.optString("notice"),
+                intent = o.optString("intent"),
+                recovering = rec?.optBoolean("active", false) ?: (o.optString("status") == "Recovering"),
+                recoveryBlocks = rec?.optInt("blocks", 0) ?: 0,
                 atMillis = now,
             )
         }.getOrElse { NodeState(answered = true, error = "unparseable", atMillis = now) }
@@ -59,11 +68,59 @@ data class NodeState(
  * that spinner indefinitely while every poll was being told 401.
  */
 /**
- * The node is up and busy coming back (replaying blocks). The API is not answering yet, so
- * `reachable` is false — but the process is alive and start/stop must be disabled, not
- * offered. Mirrors 1-click, which treats Starting/Stopping as busy and disables its control.
+ * Alive but replaying stored blocks before its API comes up — 1-click's "Recovering chain".
+ * The process is up, so offer Stop, not Start. [recoveryBlocks] gives the count when known.
+ */
+fun NodeState.isRecovering() = recovering || status == "Recovering"
+
+/**
+ * The node is coming up but not yet replaying and not yet answering — a plain "Starting…".
+ * Distinct from [isRecovering]: conflating the two labelled every startup "Recovering chain".
  */
 fun NodeState.isStarting() = status == "Starting"
+
+/** The user asked for the node to be off, and it is. Neutral — not a failure, not red. */
+fun NodeState.isStopped() = status == "Stopped"
+
+/**
+ * The reading is too old to keep asserting.
+ *
+ * Every displayed value — the pill, and the tiles fed from the last good JSON — is a
+ * SNAPSHOT. If polling stops (app backgrounded, watcher off, desktop gone) nothing clears
+ * them, so the app kept showing "Online" with live-looking Height/Peers while Basecamp had
+ * been down for minutes. A frozen frame presented as current is the same lie as a stale log
+ * line presented as state.
+ *
+ * 45s: the phone polls every 10s foreground / 15s backgrounded, so three missed polls.
+ */
+/**
+ * The 6-digit short authentication string, shown on BOTH ends so a user can confirm the
+ * phone that scanned the code is the phone the desktop is talking to.
+ *
+ * Ported byte-for-byte from pairing.cpp sas(): HMAC-SHA256 over "lgnode/sas/v1|" + onion,
+ * keyed by the enrollment token, first 4 bytes big-endian, mod 10^6, zero-padded.
+ *
+ * The app had NO implementation of this at all, while the desktop pane instructed the user
+ * to "confirm this code matches your phone" — an instruction that could not be followed.
+ * The SAS is the defence against a photographed QR: the attacker has the code but the
+ * legitimate user sees digits that do not match on their own screen.
+ */
+fun pairingSas(token: String, onion: String): String {
+    if (token.isEmpty() || onion.isEmpty()) return ""
+    return runCatching {
+        val mac = javax.crypto.Mac.getInstance("HmacSHA256")
+        mac.init(javax.crypto.spec.SecretKeySpec(token.toByteArray(), "HmacSHA256"))
+        mac.update("lgnode/sas/v1|".toByteArray())
+        mac.update(onion.toByteArray())
+        val d = mac.doFinal()
+        val v = ((d[0].toLong() and 0xFF) shl 24) or ((d[1].toLong() and 0xFF) shl 16) or
+                ((d[2].toLong() and 0xFF) shl 8) or (d[3].toLong() and 0xFF)
+        "%06d".format(v % 1_000_000)
+    }.getOrDefault("")
+}
+
+fun NodeState.isStale(nowMillis: Long) =
+    answered && atMillis > 0 && (nowMillis - atMillis) > 45_000
 
 fun NodeState.isRejected() = !answered && error.startsWith("HTTP 4")
 
@@ -113,6 +170,15 @@ object Transitions {
     fun diff(prev: NodeState?, cur: NodeState, stalledSinceMillis: Long?): List<Notice> {
         if (prev == null) return emptyList()          // first frame is a baseline, not news
         val out = mutableListOf<Notice>()
+
+        // A deliberate stop: the DESKTOP answered and told us the node is Stopped, having
+        // previously been up. This is a real node-down event, NOT a link loss — the desktop
+        // is right here answering — so it must fire "Node stopped", which the old
+        // both-reachable guard below could never reach (a stopped node has reachable=false).
+        if (cur.answered && cur.isStopped() && (prev.reachable || prev.status == "Running")) {
+            out += Notice(Event.NODE_STOPPED, "Your node stopped")
+            return out   // a clean stop is the whole story; don't also cry LINK_LOST
+        }
 
         // Link lost: we cannot reach the desktop. NOT the same as the node stopping — the
         // node may be perfectly fine and the phone simply off Wi-Fi.
