@@ -65,14 +65,22 @@ Item {
     property bool   everConnected: false    // a phone has authenticated at least once
     property int    lastSeenSecs:  -1       // -1 = never
 
-    // "Paired" must mean a device SPOKE to us, not that a key exists for one — the
-    // client-auth key is written when the QR is rendered, so clients.length > 0 is true the
-    // instant the code appears, which hid the QR before it could be scanned.
+    // THREE INDEPENDENT FACTS, deliberately not collapsed into one:
     //
-    // It uses everConnected, NOT connected: once pairing has succeeded the pane must stop
-    // showing the QR permanently. Whether the phone is reachable this second is a separate
-    // question, answered by `connected` in the label below.
-    readonly property bool paired: root.everConnected
+    //   paired     an authorised client key exists ON DISK. Ground truth for "is a device
+    //              allowed in", and the only thing [Pair]/[Unpair] act on.
+    //   connected  a phone authenticated inside the staleness window. Live link, now.
+    //   everConnected  one has authenticated at least once this session.
+    //
+    // paired used to be derived from everConnected, because keying it off the key file hid
+    // the QR the instant the key was minted. That coupling produced a state the pane could
+    // not escape: after a revoke, authorized_clients was empty (NOT paired) while
+    // lastAuthedAt was still recent (paired), so the pane claimed paired, hid the Pair
+    // control, and offered no way back — no QR, no error, nothing.
+    //
+    // With pairing an EXPLICIT action, the original problem disappears: the QR is shown
+    // because a pairing is in progress (pairUri set), not because we are "not paired".
+    readonly property bool paired: root.clients.length > 0
 
     function seenAgo() {
         if (root.lastSeenSecs < 0) return ""
@@ -173,7 +181,7 @@ Item {
         root.pairUri = ""; root.sas = ""; root.token = ""; root.onion = ""; root.ready = false
         root.expiresAt = 0; root.secsLeft = 0
         root.connected = false
-        root.note = "Disconnected. The onion no longer answers that device."
+        root.note = "Unpaired. The onion no longer answers that device."
         refresh()
     }
 
@@ -291,10 +299,8 @@ Item {
                     RowLayout {
                         Layout.fillWidth: true
                         Label {
-                            text: !root.paired ? "2. Pair your phone"
-                                               : (root.connected ? "Connected" : "Paired — not connected")
-                            color: !root.paired ? root.textCol
-                                                : (root.connected ? root.success : root.textDim)
+                            text: !root.paired ? "2. Pair your phone" : "Paired"
+                            color: root.textCol
                             font.pixelSize: 15; font.bold: true
                             Layout.fillWidth: true
                         }
@@ -303,6 +309,22 @@ Item {
                             visible: root.busy
                             implicitWidth: 22; implicitHeight: 22
                         }
+                    }
+
+                    // CONNECTION is a separate line from PAIRING, because they are separate
+                    // facts: a paired device can be switched off, and an unpaired one cannot
+                    // be connected at all. Collapsing them is what produced a pane that said
+                    // "paired" while the key had been revoked.
+                    Label {
+                        visible: root.paired
+                        text: root.connected
+                                  ? "Connected"
+                                  : (root.lastSeenSecs >= 0
+                                        ? "Connecting…  ·  last seen " + root.seenAgo()
+                                        : "Connecting…")
+                        color: root.connected ? root.success : root.textDim
+                        font.pixelSize: 13
+                        Layout.fillWidth: true
                     }
 
                     // The module is gone. Say so instead of showing a pairing flow that
@@ -379,9 +401,14 @@ Item {
                     Button {
                         // Also shown once the code expires — otherwise the pane strands the
                         // user with a dead QR and no way to ask for another.
-                        visible: !root.moduleDead && !root.paired && !root.busy
+                        // Visible while paired as well: pairing another device, or replacing
+                        // a stale one, both need this. Hiding it on `paired` is what left the
+                        // pane with no way out of a half-revoked pairing.
+                        visible: !root.moduleDead && !root.busy
                                  && (root.pairUri === "" || root.secsLeft === 0)
-                        text: root.pairUri === "" ? "Show QR" : "New code"
+                        // "Pair" is now an explicit action rather than something the pane
+                        // infers. "New code" only while a code is on screen and has expired.
+                        text: root.pairUri === "" ? "Pair" : "New code"
                         // The onion is already up on a retry; only the code needs reminting.
                         onClicked: root.ready ? root.beginPairing() : root.startRemote()
                         contentItem: Label {
@@ -466,8 +493,10 @@ Item {
                     }
 
                     Button {
-                        visible: root.paired || root.pairUri !== ""
-                        text: "Disconnect"
+                        // Named for what it does to the PAIRING (revokes the key), not for
+                        // what it does to the connection. Only shown when a key exists.
+                        visible: root.paired
+                        text: "Unpair"
                         onClicked: root.disconnectAll()
                         contentItem: Label {
                             text: parent.text; color: root.danger

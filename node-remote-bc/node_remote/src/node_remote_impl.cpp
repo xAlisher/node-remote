@@ -371,11 +371,23 @@ std::string NodeRemoteImpl::wipeDatabase()
         r["error"] = "Stop the node before wiping the database.";
         return dump(r);
     }
-    if (g_probe->readIntent() != NodeProbe::Intent::Stopped) {
+    // Refuse only while the PROCESS is alive. The derived status already distinguishes the
+    // three down-states, and they are not equivalent:
+    //
+    //   Recovering / Starting  process alive, API not up yet  -> REFUSE (the real hazard)
+    //   Error                  process died with a cause      -> ALLOW
+    //   Stopped                user stopped it                -> ALLOW
+    //
+    // Error must be allowed: recovering a node wedged after an unclean shutdown is the
+    // PRIMARY reason this action exists (logos_node_1click's resetChainState says exactly
+    // that). An earlier version of this guard required intent==Stopped, which reads as
+    // "started" in the Error state — so it blocked the one case the feature is for.
+    const QString derived = st.value("status").toString();
+    if (derived == QLatin1String("Recovering") || derived == QLatin1String("Starting")) {
         r["ok"] = false;
         r["code"] = "node_not_stopped";
-        r["error"] = "The node is starting or recovering. Stop it first — wiping now would "
-                     "delete the database out from under a running node.";
+        r["error"] = "The node is starting or replaying its database. Stop it first — "
+                     "wiping now would delete the database out from under a live process.";
         return dump(r);
     }
 
@@ -419,7 +431,9 @@ std::string NodeRemoteImpl::regenerateConfig(const std::string& initialPeers)
     // reads its identity from. It previously had NO state check at all — server-side it
     // would happily rewrite the config of a running node.
     const QJsonObject st = QJsonDocument::fromJson(g_probe->statusJson()).object();
-    if (st.value("reachable").toBool() || g_probe->readIntent() != NodeProbe::Intent::Stopped) {
+    const QString derived = st.value("status").toString();
+    if (st.value("reachable").toBool()
+        || derived == QLatin1String("Recovering") || derived == QLatin1String("Starting")) {
         r["ok"] = false;
         r["code"] = "node_not_stopped";
         r["error"] = "Stop the node before regenerating its config.";
