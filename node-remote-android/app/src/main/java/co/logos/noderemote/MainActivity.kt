@@ -384,18 +384,7 @@ class MainActivity : ComponentActivity() {
         Scaffold(topBar = {
             TopAppBar(
                 navigationIcon = {
-                    if (!connected && pendingUri.isNotEmpty()) {
-                    val onionOf = parse(pendingUri)?.first.orEmpty()
-                    ConfirmPairingScreen(
-                        code = pairingSas(pendingTok, onionOf),
-                        onConfirm = {
-                            uri = pendingUri; token = pendingTok
-                            pendingUri = ""; pendingTok = ""
-                            scope.launch { connect() }
-                        },
-                        onDismiss = { pendingUri = ""; pendingTok = ""; note = "" },
-                    )
-                } else if (!connected && showEnterUri) {
+                    if (!connected && showEnterUri) {
                         IconButton(onClick = { showEnterUri = false; note = "" }) {
                             ChevronLeftGlyph(LogosColors.white)
                         }
@@ -461,7 +450,20 @@ class MainActivity : ComponentActivity() {
         }) { pad ->
             Column(Modifier.padding(pad).fillMaxSize()) {
 
-                if (!connected && showEnterUri) {
+                // A staged pairing takes the whole screen until it is confirmed or dismissed.
+                // FIRST in the chain: it must pre-empt both Welcome and Enter-URI, since it
+                // is the step between scanning and connecting.
+                if (!connected && pendingUri.isNotEmpty()) {
+                    ConfirmPairingScreen(
+                        code = pairingSas(pendingTok, parse(pendingUri)?.first.orEmpty()),
+                        onConfirm = {
+                            uri = pendingUri; token = pendingTok
+                            pendingUri = ""; pendingTok = ""
+                            scope.launch { connect() }
+                        },
+                        onDismiss = { pendingUri = ""; pendingTok = ""; note = "" },
+                    )
+                } else if (!connected && showEnterUri) {
                     EnterUriScreen(uri, { u, t ->
                         pendingUri = u; pendingTok = t
                         showEnterUri = false
