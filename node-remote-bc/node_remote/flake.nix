@@ -19,20 +19,39 @@
 
   outputs = inputs@{ logos-module-builder, ... }:
     let
-      system = "x86_64-linux";
+      # THE HOST SYSTEM, not a hardcoded one.
+      #
+      # This was `"x86_64-linux"`, which meant the bundling below pulled x86_64-linux
+      # libraries no matter what was being built — so a darwin build shipped
+      # libQt6HttpServer.so.6 inside a Mach-O bundle. Useless there, and it masked the real
+      # problem (macOS Basecamp provides no QtHttpServer at all) behind files that looked
+      # like they were doing the job.
+      #
+      # currentSystem makes this IMPURE — build with `--impure`. The consequence is the same
+      # one receiver-basecamp documents: the catalog CI cannot auto-build it, so releases
+      # propagate to the catalog manually. node-remote already publishes manually (its
+      # modules live in subdirs of the submodule, which the stock action cannot build), so
+      # this costs nothing new here.
+      system = builtins.currentSystem;
+
       # MUST come from the builder's own nixpkgs, not a locally-resolved one. The plugin
       # is compiled against the builder's Qt (6.9.2); pulling qthttpserver from any other
       # nixpkgs yields a different Qt (6.11.1 here) and the bundled lib then fails against
       # the runtime's Qt6Core at load time — a mismatch that only shows up on a real
-      # machine, not in the build.
+      # machine, not in the build. Same reasoning applies to tor and its closure.
       pkgs = logos-module-builder.inputs.nixpkgs.legacyPackages.${system};
+
+      isDarwin = pkgs.stdenv.hostPlatform.isDarwin;
+
+      # tor, shipped at <moduleDir>/bin/ so the .lgx is zero-install. See nix/tor-bundle.nix.
+      torBundle = pkgs.callPackage ./nix/tor-bundle.nix { };
     in
     logos-module-builder.lib.mkLogosModule {
       src = ./.;
       configFile = ./metadata.json;
       flakeInputs = inputs;
 
-      # Ship Qt6HttpServer next to the plugin.
+      # Ship Qt6HttpServer next to the plugin, in the form the platform actually loads.
       #
       # VERIFIED ON A CLEAN MACHINE (khidr, no nix, 2026-08-11): without this the module
       # fails to load with
@@ -43,12 +62,39 @@
       # pulls it in. `nix.packages.runtime` only makes it available inside the BUILD
       # sandbox; it does not put it in the .lgx.
       #
-      # The installed module dir has RUNPATH '$ORIGIN:$ORIGIN/.', so a plain copy beside
-      # the plugin resolves. qtwebsockets comes along because HttpServer links it.
+      # macOS needs the SAME fix in a different shape: Basecamp.app there ships 55 Qt
+      # frameworks and QtHttpServer is not among them, and a Mach-O plugin loads a
+      # FRAMEWORK, not a .so. Verified: the plugin's LC_RPATH is `@loader_path`, so a
+      # framework copied beside it resolves — the darwin analogue of the $ORIGIN trick
+      # the linux branch relies on.
       #
       # Per logos_module_builder_bundling: the builder's installPhase bypasses cmake
       # install(), so postInstall is the supported hook for extra payload.
       postInstall = ''
+        # ── tor, on every platform ───────────────────────────────────────────────────
+        # resolveTor() has always claimed the .lgx ships tor here. It did not: on Linux
+        # the PATH fallback quietly found the system /bin/tor, so nothing bundled and
+        # nobody noticed until a Mac (no tor, no Homebrew) produced tor_not_found.
+        mkdir -p $out/lib/bin
+        cp -a ${torBundle}/. $out/lib/bin/
+        chmod -R u+w $out/lib/bin
+
+        # ── Qt HttpServer/WebSockets, in the platform's own form ────────────────────
+      '' + (if isDarwin then ''
+        for fw in QtHttpServer QtWebSockets; do
+          src=""
+          for cand in ${pkgs.qt6.qthttpserver}/lib/$fw.framework \
+                      ${pkgs.qt6.qtwebsockets}/lib/$fw.framework; do
+            [ -d "$cand" ] && src="$cand"
+          done
+          if [ -n "$src" ]; then
+            cp -a "$src" $out/lib/
+          else
+            echo "WARNING: $fw.framework not found — the module will not load on macOS" >&2
+          fi
+        done
+        chmod -R u+w $out/lib
+      '' else ''
         for lib in ${pkgs.qt6.qthttpserver}/lib/libQt6HttpServer.so.* \
                    ${pkgs.qt6.qtwebsockets}/lib/libQt6WebSockets.so.*; do
           [ -f "$lib" ] || continue
@@ -62,6 +108,6 @@
           soname=''${base%.*.*}     # libQt6HttpServer.so.6.9.2 -> libQt6HttpServer.so.6
           ln -sf "$base" "$out/lib/$soname"
         done
-      '';
+      '');
     };
 }

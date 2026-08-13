@@ -30,8 +30,12 @@ namespace {
 constexpr QFileDevice::Permissions kOwnerOnlyDir =
     QFileDevice::ReadOwner | QFileDevice::WriteOwner | QFileDevice::ExeOwner;
 
-// Resolve a bundled helper: <moduleDir>/bin/<name> first (the .lgx ships tor there via the
-// flake postInstall), then $NODE_REMOTE_TOR_BIN, then PATH.
+// Resolve tor: <moduleDir>/bin/tor first (the .lgx ships it there — see nix/tor-bundle.nix),
+// then $NODE_REMOTE_TOR_BIN, then PATH.
+//
+// This comment used to claim the bundle existed when it did not. Nothing caught it because
+// the PATH fallback finds /bin/tor on any Linux desktop; the gap only surfaced on a Mac,
+// where there is usually no tor at all and the module simply cannot start its onion.
 QString resolveTor()
 {
     const QByteArray override = qgetenv("NODE_REMOTE_TOR_BIN");
@@ -48,13 +52,19 @@ QString resolveTor()
     return QStringLiteral("tor");
 }
 
-// The AppImage's bundled libs break system tor (it needs system libevent/openssl).
-// Strip the loader vars so the spawned process resolves against the system.
+// The host's bundled libs break a spawned tor (it needs its own libevent/openssl). Strip
+// the loader variables so the child resolves against its own bundle or the system.
+//
+// DYLD_* included: those are macOS's equivalents of LD_LIBRARY_PATH/LD_PRELOAD, and their
+// absence here was a latent bug — the Linux path has worked around exactly this class of
+// failure since the AppImage days, while macOS had no equivalent guard at all.
 QProcessEnvironment cleanSpawnEnv()
 {
     QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
-    for (const char* v : {"LD_LIBRARY_PATH", "LD_PRELOAD", "QT_PLUGIN_PATH",
-                          "QML2_IMPORT_PATH", "GST_PLUGIN_SYSTEM_PATH"})
+    for (const char* v : {"LD_LIBRARY_PATH", "LD_PRELOAD",
+                          "DYLD_LIBRARY_PATH", "DYLD_INSERT_LIBRARIES",
+                          "DYLD_FRAMEWORK_PATH", "DYLD_FALLBACK_LIBRARY_PATH",
+                          "QT_PLUGIN_PATH", "QML2_IMPORT_PATH", "GST_PLUGIN_SYSTEM_PATH"})
         env.remove(QString::fromLatin1(v));
     return env;
 }
