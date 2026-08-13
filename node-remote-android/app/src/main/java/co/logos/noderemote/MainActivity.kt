@@ -420,6 +420,21 @@ class MainActivity : ComponentActivity() {
                         Text(txt, fontSize = 12.sp, color = col,
                              lineHeight = 13.sp,
                              modifier = Modifier.offset(y = (-3).dp))
+
+                        // THE PAIRING CODE. Shown while we have a pairing but no data yet —
+                        // exactly the window in which the desktop is asking "confirm this
+                        // code matches your phone". The app had no SAS at all, so that
+                        // instruction could not be followed, and the defence against a
+                        // photographed QR was missing on the end that matters: the attacker
+                        // holds the code, but the real user sees digits that do not match.
+                        if (!state.answered && token.isNotEmpty() && onion.isNotEmpty()) {
+                            val code = pairingSas(token, onion)
+                            if (code.isNotEmpty())
+                                Text("Pairing code $code — check it matches the desktop",
+                                     fontSize = 12.sp, color = LogosColors.orange300,
+                                     lineHeight = 13.sp,
+                                     modifier = Modifier.offset(y = (-2).dp))
+                        }
                     }
                 },
                 actions = {

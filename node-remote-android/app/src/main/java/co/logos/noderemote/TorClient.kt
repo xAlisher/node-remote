@@ -115,6 +115,21 @@ object TorClient {
         // OnionAddress.V3 has no public constructor — build it via the String extension.
         val addr = onionHost.removeSuffix(".onion").toOnionAddressV3()
         val key = privBase32.uppercase().toX25519PrivateKey()
+
+        // REMOVE ANY EXISTING CREDENTIAL FIRST. Every beginPairing() on the desktop mints a
+        // NEW x25519 keypair and overwrites authorized_clients/phone.auth, so after an
+        // Unpair -> Pair the desktop authorises key #2 while tor here still holds key #1.
+        // Add alone does not replace it: the stale key stays, the descriptor cannot be
+        // decrypted, and the phone silently never reaches the onion at all.
+        //
+        // The signature is exactly this: a scanned QR appeared to "connect" while /v1/status
+        // never returned, and on the desktop last_seen was NEVER written — not one request
+        // had arrived, so it was not an auth failure, it was no connection.
+        //
+        // Remove throws when there is nothing to remove (first pairing), which is not an
+        // error — hence the swallow.
+        runCatching { rt.executeAsync(TorCmd.OnionClientAuth.Remove(addr)) }
+
         rt.executeAsync(TorCmd.OnionClientAuth.Add(addr, key))
         Unit
     }

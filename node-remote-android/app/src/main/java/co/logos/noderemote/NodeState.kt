@@ -93,6 +93,32 @@ fun NodeState.isStopped() = status == "Stopped"
  *
  * 45s: the phone polls every 10s foreground / 15s backgrounded, so three missed polls.
  */
+/**
+ * The 6-digit short authentication string, shown on BOTH ends so a user can confirm the
+ * phone that scanned the code is the phone the desktop is talking to.
+ *
+ * Ported byte-for-byte from pairing.cpp sas(): HMAC-SHA256 over "lgnode/sas/v1|" + onion,
+ * keyed by the enrollment token, first 4 bytes big-endian, mod 10^6, zero-padded.
+ *
+ * The app had NO implementation of this at all, while the desktop pane instructed the user
+ * to "confirm this code matches your phone" — an instruction that could not be followed.
+ * The SAS is the defence against a photographed QR: the attacker has the code but the
+ * legitimate user sees digits that do not match on their own screen.
+ */
+fun pairingSas(token: String, onion: String): String {
+    if (token.isEmpty() || onion.isEmpty()) return ""
+    return runCatching {
+        val mac = javax.crypto.Mac.getInstance("HmacSHA256")
+        mac.init(javax.crypto.spec.SecretKeySpec(token.toByteArray(), "HmacSHA256"))
+        mac.update("lgnode/sas/v1|".toByteArray())
+        mac.update(onion.toByteArray())
+        val d = mac.doFinal()
+        val v = ((d[0].toLong() and 0xFF) shl 24) or ((d[1].toLong() and 0xFF) shl 16) or
+                ((d[2].toLong() and 0xFF) shl 8) or (d[3].toLong() and 0xFF)
+        "%06d".format(v % 1_000_000)
+    }.getOrDefault("")
+}
+
 fun NodeState.isStale(nowMillis: Long) =
     answered && atMillis > 0 && (nowMillis - atMillis) > 45_000
 
