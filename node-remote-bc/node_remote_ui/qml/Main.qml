@@ -467,7 +467,16 @@ Item {
 
                     // The QR itself, plus the code the phone must match.
                     ColumnLayout {
-                        visible: root.pairUri !== "" && !root.paired
+                        // Gate on CONNECTED, not paired. `paired` means "a key exists on
+                        // disk", and beginPairing() writes that key the instant the code is
+                        // drawn — so gating on !paired hid the QR before it could be
+                        // scanned. That was the original bug; redefining `paired` for the
+                        // Pair/Unpair split reintroduced it here, because only one side of
+                        // the pair was updated.
+                        //
+                        // The code stays up until a phone actually authenticates, which is
+                        // the only event that means the pairing WORKED.
+                        visible: root.pairUri !== "" && !root.connected
                         Layout.fillWidth: true
                         spacing: 10
 
