@@ -70,7 +70,18 @@ strings -el "$B/plugins/logos_node_1click/logos_node_1click_plugin.so" | grep -c
 
 echo "== 4. relaunching =="
 cd "$HOME"
-XDG_RUNTIME_DIR=/run/user/1000 WAYLAND_DISPLAY=wayland-0 \
+# Detect the session type rather than hardcoding it. This host has moved between Wayland
+# and X11 across reboots, and a hardcoded WAYLAND_DISPLAY pointing at a socket that does
+# not exist makes Qt abort instantly with an EMPTY log — which reads as a broken build
+# rather than a missing display. Cost one debugging cycle after a power cut moved khidr
+# from wayland-0 to X0.
+if [ -S /run/user/1000/wayland-0 ]; then
+  DISPLAY_ENV="WAYLAND_DISPLAY=wayland-0"
+else
+  DISPLAY_ENV="DISPLAY=:0"
+fi
+echo "  display: $DISPLAY_ENV"
+env XDG_RUNTIME_DIR=/run/user/1000 $DISPLAY_ENV \
   nohup "$HOME/logos-basecamp-current.AppImage" > /tmp/bc-nr.log 2>&1 &
 for i in $(seq 1 20); do
   grep -q "Logos Core started successfully" /tmp/bc-nr.log 2>/dev/null && { echo "  up after ${i}s"; break; }; sleep 1
