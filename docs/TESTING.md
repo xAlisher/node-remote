@@ -66,6 +66,12 @@ Say so rather than implying coverage:
   To reproduce: pair, start a node that needs IBD, leave the pane open ~90s.
 - **Doze survival.** How long the foreground service keeps Tor alive under aggressive
   battery management is unmeasured.
+- **The cold-start fix (0.1.1) is UNPROVEN.** A first run with no Tor cache was measured
+  taking 125s to bootstrap, and the old 120s publish timeout gave up five seconds short —
+  leaving no QR and no way forward. The timeout is now split so the clock for publishing
+  only starts once Tor reports Bootstrapped 100%. But the attempt to reproduce it wiped the
+  cache and got a 6-second bootstrap, so the slow path was never re-entered. The fix is
+  reasoned, not demonstrated. Tracked as #6.
 
 ## Proven headlessly
 
@@ -100,6 +106,25 @@ onion, with no phone involved:
 ## What to test in this release
 
 <!-- Newest first. One block per release; add a new ### section at the top. -->
+
+### v0.1.1 — pairing UI hotfixes
+
+Everything here was reported from a live pane and fixed the same day. The Android app is
+unchanged in behaviour; it carries 0.1.1 because the two halves share a pairing protocol and
+are versioned together.
+
+- **Press Pair and watch the code appear.** It should show up immediately, with no blank gap
+  where the card is present but the QR is missing. That gap was a readiness check that dipped
+  every time a code was minted.
+- **Restart Basecamp while a code is on screen, then reopen the pane.** It should say
+  *Pairing unfinished* and offer **Pair** — not claim you are paired, and not leave Unpair as
+  the only button. The code lives in memory; the key outlives it.
+- **Check the header never says Paired until your phone has actually connected.** It used to
+  go green the instant the QR was drawn, before anyone had scanned anything.
+- **After a restart, read the line under Connecting…** It should tell you the reconnect takes
+  about a minute. If it takes materially longer than that, say so — the number is a claim.
+- **First run on a machine that has never run Tor** is the case worth reporting: the QR should
+  still appear even if Tor takes minutes to bootstrap. See the caveat below.
 
 ### v0.1.0 — first release
 
