@@ -175,7 +175,26 @@ bool OnionService::spawnTor(const QString& cfg, QString& errOut)
 QString OnionService::start(quint16 localPort)
 {
     m_localPort = localPort;
-    if (m_tor && m_tor->state() == QProcess::Running) return QString();
+    if (m_tor && m_tor->state() == QProcess::Running) {
+        // Tor is up, so there is nothing to spawn — but returning here used to be a DEAD END.
+        // If the readiness poll had already given up, m_ready was false with the timer
+        // stopped, so nothing would ever re-check: the pane's Pair button called straight
+        // into this early return and did nothing at all, forever, while the onion was live.
+        // The only escape was restarting Basecamp.
+        //
+        // So make the button mean something: if we are not ready and the poll is not running,
+        // start looking again. Cheap, and it turns an unrecoverable state into a retry.
+        if (!m_ready && !m_poll.isActive()) {
+            qInfo() << "OnionService: re-arming the readiness poll after a previous timeout";
+            m_error.clear();
+            m_ticks = 0;
+            m_bootstrappedAt = 0;
+            m_afterHup = false;
+            m_hsLogMark = 0;   // scan the whole log: the publish we missed is already in it
+            m_poll.start(2000);
+        }
+        return QString();
+    }
 
     m_runDir = QStandardPaths::writableLocation(QStandardPaths::TempLocation)
                + "/node_remote/tor";
@@ -250,12 +269,40 @@ void OnionService::poll()
 {
     if (m_runDir.isEmpty()) { m_poll.stop(); return; }
 
-    // Bounded (Senty ISSUE-3): ~120s, then surface a real timeout rather than polling forever.
-    if (++m_ticks > 60) {
+    ++m_ticks;
+
+    // Detect bootstrap completion INDEPENDENTLY of the readiness fallback below, because the
+    // timeout has to know about it. (It used to be set only inside that fallback.)
+    if (m_bootstrappedAt == 0 && !m_afterHup
+        && fileContains(m_runDir + "/tor.log", "Bootstrapped 100%", nullptr))
+        m_bootstrappedAt = m_ticks;
+
+    // TWO CLOCKS, because "tor is still bootstrapping" and "tor is bootstrapped but the
+    // descriptor will not publish" are different failures with wildly different budgets.
+    //
+    // This was one flat 120s clock started when we spawned tor, and it MISFIRED ON EVERY
+    // FIRST RUN. A fresh install has an empty tor cache, so tor must fetch a full consensus:
+    // measured at 125s on a normal connection. The poll gave up at 120s — five seconds before
+    // tor finished — called m_poll.stop(), and left m_ready false permanently while the onion
+    // published two seconds later and sat there live. The pane showed no QR and no way
+    // forward; a Basecamp restart "fixed" it only because the cache was then warm, which is
+    // exactly why this survived testing. Same trap the test harness hit, in the product.
+    //
+    // A cold bootstrap can legitimately take many minutes on a slow, metered or censored
+    // link, so it gets a wide ceiling. Publishing, once tor is actually ready, is fast — and
+    // if it has not happened in three minutes something is genuinely wrong.
+    constexpr int kBootstrapTicks = 450;   // 15 min — cold consensus, slow link, bridges
+    constexpr int kPublishTicks   = 90;    // 3 min AFTER bootstrap completes
+    const bool timedOut = (m_bootstrappedAt > 0)
+                              ? (m_ticks - m_bootstrappedAt > kPublishTicks)
+                              : (m_ticks > kBootstrapTicks);
+    if (timedOut) {
         m_poll.stop();
         if (!m_ready) {
-            m_error = QStringLiteral("publish_timeout");
-            qWarning() << "OnionService: onion descriptor publish timed out";
+            m_error = m_bootstrappedAt > 0 ? QStringLiteral("publish_timeout")
+                                           : QStringLiteral("tor_bootstrap_timeout");
+            qWarning() << "OnionService: giving up —" << m_error
+                       << "after" << (m_ticks * 2) << "s";
             emit failed(m_error);
         }
         return;
@@ -278,10 +325,9 @@ void OnionService::poll()
     // present and this fallback would declare readiness instantly — defeating the mark and
     // re-announcing the onion before the new client's descriptor is up. On a fresh start it
     // stays, as the guard against tor changing its log wording.
-    if (!ok && !m_afterHup
-        && fileContains(m_runDir + "/tor.log", "Bootstrapped 100%", nullptr)) {
-        if (m_bootstrappedAt == 0) m_bootstrappedAt = m_ticks;
-        if (m_ticks - m_bootstrappedAt >= 12) ok = true;   // ~24s after 100%
+    if (!ok && !m_afterHup && m_bootstrappedAt > 0
+        && m_ticks - m_bootstrappedAt >= 12) {
+        ok = true;   // ~24s after 100%
     }
 
     if (ok) {

@@ -90,9 +90,26 @@ Item {
     // lastAuthedAt was still recent (paired), so the pane claimed paired, hid the Pair
     // control, and offered no way back — no QR, no error, nothing.
     //
-    // With pairing an EXPLICIT action, the original problem disappears: the QR is shown
-    // because a pairing is in progress (pairUri set), not because we are "not paired".
-    readonly property bool paired: root.clients.length > 0
+    // THREE STATES, because there are three. Collapsing them into one bool is what put
+    // "Paired" (green, with an Unpair button) on screen the moment the QR was DRAWN, before
+    // anybody had scanned anything — beginPairing() writes authorized_clients/phone.auth
+    // immediately, so `clients.length > 0` is true while the code is still on screen waiting.
+    //
+    //   hasKey   a credential exists. Pairing is in progress OR complete.
+    //   paired   a device has ACTUALLY AUTHENTICATED with it.
+    //   connected  ...and did so inside the staleness window. Live link, now.
+    //
+    // This is the same rule the module already enforces for refusing to rotate a key
+    // (lastAuthedAt > 0, not "a key exists") — see docs/STATE-MAP.md. The pane was still on
+    // the old test, so the two disagreed about what "paired" means.
+    //
+    // Deriving `paired` from everConnected was tried before and abandoned, because after a
+    // revoke authorized_clients was empty while lastAuthedAt was still recent, so the pane
+    // claimed paired with no way back. That trap is CLOSED at the module now: revokeClient()
+    // removes last_seen and calls forgetLastAuthed() when the final client goes, so
+    // everConnected drops with the key. Verified before restoring this.
+    readonly property bool hasKey: root.clients.length > 0
+    readonly property bool paired: root.everConnected
 
     function seenAgo() {
         if (root.lastSeenSecs < 0) return ""
@@ -133,7 +150,15 @@ Item {
         }
         root.everConnected = info.everConnected === true;
         root.lastSeenSecs  = (info.lastSeenSecs === undefined) ? -1 : info.lastSeenSecs;
-        if (info.error) root.note = info.error;
+        // An error from the module means the operation CONCLUDED, in failure. Clearing busy
+        // is what brings the Pair button back: it is hidden while busy, so a startRemote()
+        // that ended in publish_timeout left the pane with an error message and NO CONTROL —
+        // no button, no retry, nothing but restarting Basecamp. The state was unrecoverable
+        // from the UI even though the module could recover.
+        if (info.error) {
+            root.busy = false;
+            root.note = root.humanError(info.error);
+        }
     }
 
     function tick() {
@@ -171,9 +196,26 @@ Item {
             // could silently cut off an already-paired phone. It exists to auto-issue a
             // code once the onion finishes publishing after a fresh start; that is the
             // unpaired case and only the unpaired case.
-            if (root.ready && root.busy && root.pairUri === "" && !root.paired) beginPairing()
+            if (root.ready && root.busy && root.pairUri === "" && !root.hasKey) beginPairing()
             inFlight = false
         }
+    }
+
+    // The module's error codes are diagnostic, not English. "publish_timeout" tells a user
+    // nothing about what to do next, and what to do next is almost always "press it again".
+    function humanError(code) {
+        if (code === "tor_bootstrap_timeout")
+            return "Tor could not finish connecting. This is usually a slow or filtered "
+                 + "network. Press Pair to try again — the first run is the slow one."
+        if (code === "publish_timeout")
+            return "Tor connected, but your onion address did not publish in time. "
+                 + "Press Pair to try again."
+        if (code === "tor_not_found")
+            return "The bundled Tor could not be found. This looks like a broken install."
+        if (code === "tor_port_in_use")
+            return "Tor could not start — its port is already in use. Another copy of "
+                 + "Basecamp or a leftover Tor process is the usual cause."
+        return code
     }
 
     function startRemote() {
@@ -340,7 +382,8 @@ Item {
 
                     Label {
                         // Honest while it is true; the F-Droid listing is not live yet.
-                        text: "Not published yet — these links go live with the first release."
+                        text: "Node Remote v0.1.0 — add the F-Droid repo above, or grab the "
+                              + "APK from GitHub."
                         color: root.textDim; font.pixelSize: 11; font.italic: true
                         Layout.fillWidth: true; wrapMode: Text.WordWrap
                     }
@@ -353,6 +396,7 @@ Item {
                 Layout.fillWidth: true
                 implicitHeight: pairCol.implicitHeight + 28
                 color: root.surface
+                // Green means a device is actually paired, not merely that a code exists.
                 border.color: root.paired ? root.success : root.border
                 radius: 10
 
@@ -365,7 +409,9 @@ Item {
                     RowLayout {
                         Layout.fillWidth: true
                         Label {
-                            text: !root.paired ? "2. Pair your phone" : "Paired"
+                            text: root.paired ? "Paired"
+                                  : (root.hasKey ? "Pairing — scan the code"
+                                                 : "2. Pair your phone")
                             color: root.textCol
                             font.pixelSize: 15; font.bold: true
                             Layout.fillWidth: true
@@ -486,7 +532,7 @@ Item {
                         // true while the code is on screen — without it an expired code would
                         // leave no way to mint another.
                         visible: !root.moduleDead && !root.busy
-                                 && (!root.paired
+                                 && (!root.hasKey
                                      || (root.pairUri !== "" && root.secsLeft === 0))
                         // "Pair" is now an explicit action rather than something the pane
                         // infers. "New code" only while a code is on screen and has expired.
@@ -592,8 +638,10 @@ Item {
 
                     Button {
                         // Named for what it does to the PAIRING (revokes the key), not for
-                        // what it does to the connection. Only shown when a key exists.
-                        visible: root.paired
+                        // what it does to the connection. Keyed on hasKey, not paired: a code
+                        // that was minted and never scanned still wrote a key, and cancelling
+                        // it is exactly what Unpair is for.
+                        visible: root.hasKey
                         text: "Unpair"
                         onClicked: root.disconnectAll()
                         contentItem: Label {
