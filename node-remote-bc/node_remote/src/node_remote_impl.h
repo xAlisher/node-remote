@@ -145,6 +145,10 @@ private:
     // across threads is what was killing the module.
     mutable QMutex m_balanceMu;
     QString m_primaryAddress, m_balanceRaw, m_balance, m_balanceError;
+    // Last observed node reachability: written on the HTTP thread by getNodeStatus(), read
+    // on the timer thread by refreshBalance() — hence under the same mutex.
+    bool    m_lastReachable = false;
+    qint64  m_lastBalanceAt = 0;      // timer thread only
 
     OnionService* m_onion = nullptr;
     BlockStore*   m_blocks = nullptr;

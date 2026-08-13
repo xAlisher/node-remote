@@ -198,6 +198,18 @@ std::string NodeRemoteImpl::getNodeStatus()
     // backtrace and why "balance: begin" with no matching "end" preceded every one.
     {
         QMutexLocker lk(&m_balanceMu);
+        // Reachability drives the balance timer's decision to spend an IPC call at all.
+        // Recorded here because this runs on every phone poll.
+        const bool reachable = o.value("reachable").toBool();
+        if (m_lastReachable && !reachable) {
+            // The node just went away: drop the cached figure. It stops /v1/status
+            // reporting a balance for a node that is not running, AND it means the next
+            // time the node comes up the timer sees an EMPTY balance and fetches at once
+            // rather than waiting out the 30s steady-state backoff.
+            m_balanceRaw.clear();
+            m_balance.clear();
+        }
+        m_lastReachable = reachable;
         if (!m_primaryAddress.isEmpty()) o["primaryAddress"] = m_primaryAddress;
         if (!m_balanceRaw.isEmpty())     o["balanceRaw"] = m_balanceRaw;
         if (!m_balance.isEmpty())        o["balance"] = m_balance;
@@ -217,6 +229,30 @@ void NodeRemoteImpl::refreshBalance()
     // two seconds after a balance tick, with blocks arriving throughout. This guard stops
     // us stacking a second wallet call inside the first; it does NOT make the platform's
     // sync IPC reentrant, so it is a mitigation, not a proof. See docs/TESTING.md.
+    // Spend an IPC call only when it can achieve something:
+    //   node down         -> nothing at all (the RPC would just fail on every tick)
+    //   up, no figure yet -> every tick (3s), so the balance lands right after a start
+    //   up, have a figure -> at most every 30s
+    //
+    // The timer fires at 3s and THIS decides. Making the timer fast and the work
+    // conditional keeps every wallet IPC on the one thread that may safely do it, which is
+    // what the SIGSEGV fix requires.
+    bool reachable = false;
+    bool haveFigure = false;
+    {
+        QMutexLocker lk(&m_balanceMu);
+        reachable = m_lastReachable;
+        haveFigure = !m_balanceRaw.isEmpty();
+    }
+    if (!reachable) return;
+    const qint64 nowSecs = QDateTime::currentSecsSinceEpoch();
+    if (haveFigure && (nowSecs - m_lastBalanceAt) < 30) return;
+
+    // RESTORED. This check was lost when the diagnostic tracing was stripped: the guard had
+    // been written as one line, `if (m_ipcBusy) { NR_TRACE(...); return; }`, and the filter
+    // that removed every NR_TRACE line took the whole thing. m_ipcBusy has been set and
+    // never read since 033525f — the re-entrancy guard was dead code.
+    if (m_ipcBusy) return;
     m_ipcBusy = true;
     struct Clear { bool& b; ~Clear() { b = false; } } clear{m_ipcBusy};
 
@@ -264,6 +300,7 @@ void NodeRemoteImpl::refreshBalance()
         // Kept for older clients; the phone formats from balanceRaw with 1-click's algorithm.
         if (okNum) m_balance = QString::number(v / 10000.0, 'f', 4);
     }
+    m_lastBalanceAt = nowSecs;
 }
 
 void NodeRemoteImpl::onContextReady()
@@ -292,9 +329,11 @@ void NodeRemoteImpl::onContextReady()
     if (!m_balanceTimer) {
         m_balanceTimer = new QTimer(m_onion);
         QObject::connect(m_balanceTimer, &QTimer::timeout, m_onion, [this] { refreshBalance(); });
-        // 30s, not 15: every tick is a window for the reentrancy above, and a balance
-        // that is half a minute stale costs nothing.
-        m_balanceTimer->start(30000);
+        // 3s TICK, but refreshBalance() decides whether to act — see the guards there.
+        // A bare 30s timer meant the balance could take half a minute to appear after a
+        // start, because nothing observed the node coming up; a bare 3s timer would hammer
+        // the wallet RPC against a stopped node forever.
+        m_balanceTimer->start(3000);
         QTimer::singleShot(3000, m_onion, [this] { refreshBalance(); });
     }
 }
