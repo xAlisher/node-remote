@@ -118,9 +118,17 @@ fun StatusTab(s: NodeState, raw: String, note: String = "", nowMs: Long = 0L,
         // exclusively when status=="Error" (node meant to be up, down with a cause), so a
         // stopped/recovering node never shows red here.
         val nodeErr = s.error.takeIf { it.isNotEmpty() && s.status == "Error" }
-        val shown = note.takeIf { it.isNotEmpty() } ?: nodeErr
-        if (shown != null) ErrorCard(shown, control)
-        else NodeStateBlock(s, control, !live)
+        when {
+            // A control note ("stopping node…", "starting node…") is a TRANSIENT PROGRESS
+            // message, not a failure. It was routed through ErrorCard, so every normal
+            // start/stop flashed a red error panel — with a copy button, as if there were
+            // something to report. Busy gets its own card: accent orange, matching the
+            // Bootstrapping/Recovering pills, which are the other "working, not broken"
+            // states.
+            note.isNotEmpty() -> BusyCard(note, control)
+            nodeErr != null -> ErrorCard(nodeErr, control)
+            else -> NodeStateBlock(s, control, !live)
+        }
 
         // Say HOW old, rather than silently blanking the screen. "Last reading 6 min ago"
         // is information; a bare "Waiting for data…" with no history is not.
@@ -208,6 +216,30 @@ fun StatusTab(s: NodeState, raw: String, note: String = "", nowMs: Long = 0L,
  * Red is reserved for an ACTUAL error reported by the node, not for "we could not reach
  * it" — those are different problems and colouring them the same trains you to ignore both.
  */
+/** In-flight action: orange like the other busy states, no copy button — there is nothing
+ *  to report, and offering to copy "starting node…" implies something went wrong. */
+@Composable
+private fun BusyCard(text: String, control: @Composable () -> Unit = {}) {
+    Surface(color = LogosColors.orange300.copy(alpha = 0.10f),
+            shape = MaterialTheme.shapes.medium,
+            modifier = Modifier.fillMaxWidth()) {
+        Column {
+            Row(Modifier.fillMaxWidth().padding(start = 16.dp, top = 14.dp, bottom = 6.dp, end = 14.dp),
+                verticalAlignment = Alignment.CenterVertically) {
+                CircularProgressIndicator(Modifier.size(14.dp), strokeWidth = 2.dp,
+                                          color = LogosColors.orange300)
+                Spacer(Modifier.width(10.dp))
+                Text(text.replaceFirstChar { it.uppercase() },
+                     color = LogosColors.orange300,
+                     style = MaterialTheme.typography.bodyLarge,
+                     modifier = Modifier.weight(1f))
+            }
+            // Keep the control reachable, same as ErrorCard.
+            Row(Modifier.fillMaxWidth().padding(start = 14.dp, bottom = 8.dp)) { control() }
+        }
+    }
+}
+
 /**
  * Full-text, copyable error. No maxLines: a truncated error is worse than none, because
  * the tail is where the line/column and the actual cause live.
