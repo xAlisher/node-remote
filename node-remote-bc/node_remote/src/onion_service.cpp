@@ -287,6 +287,12 @@ bool OnionService::authorizeClient(const QString& name, const QString& x25519Pub
     if (!QDir().mkpath(dir)) return false;
     QFile::setPermissions(dir, kOwnerOnlyDir);
 
+    // Drop the deny-all sentinel: it exists only to keep the service closed while NO real
+    // client is authorized, and one is being authorized right now. Leaving it behind put a
+    // second, permanently undecryptable slot in every descriptor — harmless to correctness
+    // but pure noise when reading authorized_clients to diagnose a pairing.
+    QFile::remove(dir + "/_sealed.auth");
+
     QFile f(dir + "/" + name + ".auth");
     if (!f.open(QIODevice::WriteOnly | QIODevice::Truncate)) return false;
     // Format per rend-spec-v3: descriptor:x25519:<base32 public key>

@@ -657,6 +657,40 @@ std::string NodeRemoteImpl::beginPairing(const std::string& label)
         return dump(r);
     }
 
+    // REFUSE TO CLOBBER A LIVE PAIRING.
+    //
+    // This function is destructive and did not say so. It mints a NEW x25519 keypair,
+    // TRUNCATES authorized_clients/<label>.auth over the old public key, and rotates the
+    // bearer token. A phone that is already paired holds the OLD private key and the OLD
+    // token, and nothing tells it otherwise — so after a stray call it can no longer
+    // decrypt the descriptor, every request times out, last_seen stays NEVER, and both
+    // ends sit there looking healthy. There is no error to observe because from tor's
+    // point of view an un-authorized client is indistinguishable from no client at all.
+    //
+    // That is not hypothetical: a rotation at 17:58:53 left phone.auth holding
+    // 76a2yia3… while the phone still held the private half of 4swheovo…, and the only
+    // way to see it was to derive the public key from the phone's stored key by hand.
+    //
+    // Rotation is still available — it is just spelled out: revoke, then pair. "Unpair"
+    // already does the revoke, so the destructive step is one the user asks for by name
+    // rather than one a poll loop can perform by accident.
+    // The test is "has a device actually USED this key", not "does a key exist". A key is
+    // written the instant the QR is drawn, so `authorizedClients()` is non-empty for every
+    // code still on screen; refusing on that alone would strand the user with an expired
+    // code and no way to mint another. An unscanned key belongs to nobody and is free to
+    // replace. lastAuthedAt() > 0 means a real device completed an authenticated request
+    // with it — that is the one worth protecting.
+    const QStringList existing = m_onion->authorizedClients();
+    if (!existing.isEmpty() && m_http && m_http->lastAuthedAt() > 0) {
+        r["ok"] = false;
+        r["code"] = "already_paired";
+        r["clients"] = QJsonArray::fromStringList(existing);
+        r["error"] = QStringLiteral("Already paired with %1. Unpair first to pair a "
+                                    "different device — issuing a new code would silently "
+                                    "cut off the paired one.").arg(existing.join(", "));
+        return dump(r);
+    }
+
     const pairing::KeyPair kp = pairing::generateClientAuthKey();
     if (!kp.ok) { r["ok"] = false; r["error"] = "keygen_failed"; return dump(r); }
 

@@ -125,6 +125,12 @@ Item {
         root.onion     = info.onion || "";
         root.clients   = info.clients || [];
         root.connected     = info.connected === true;
+        // Retire the code the moment the phone completes the handshake. It was previously
+        // left on screen until it expired, so a successful pairing still showed a live QR —
+        // which reads as "it did not work" and invites a re-scan of a code that is spent.
+        if (root.connected && root.pairUri !== "") {
+            root.pairUri = ""; root.sas = ""; root.expiresAt = 0; root.secsLeft = 0;
+        }
         root.everConnected = info.everConnected === true;
         root.lastSeenSecs  = (info.lastSeenSecs === undefined) ? -1 : info.lastSeenSecs;
         if (info.error) root.note = info.error;
@@ -160,7 +166,12 @@ Item {
             if (inFlight) return           // re-entrancy guard: callModule blocks
             inFlight = true
             refresh()
-            if (root.ready && root.busy && root.pairUri === "") beginPairing()
+            // `&& !root.paired` is the important clause. beginPairing() ROTATES the
+            // client key, so this line — which fires on a timer, with no user involved —
+            // could silently cut off an already-paired phone. It exists to auto-issue a
+            // code once the onion finishes publishing after a fresh start; that is the
+            // unpaired case and only the unpaired case.
+            if (root.ready && root.busy && root.pairUri === "" && !root.paired) beginPairing()
             inFlight = false
         }
     }
@@ -173,7 +184,15 @@ Item {
         refresh()
     }
 
-    function beginPairing() {
+    // Rotation is deliberately TWO steps: revoke, then pair. The module refuses to issue a
+    // code while a device is paired, because doing so invalidates that device with no
+    // signal at either end. `replaceExisting` is the explicit consent for that.
+    function beginPairing(replaceExisting) {
+        if (replaceExisting === true) {
+            for (var i = 0; i < root.clients.length; ++i)
+                logos.callModule("node_remote", "revokeClient", [root.clients[i]])
+            root.clients = []
+        }
         var p = parse(logos.callModule("node_remote", "beginPairing", ["phone"]))
         if (p.ok !== true) { root.note = p.error || "pairing failed"; root.busy = false; return }
         root.pairUri = p.uri || ""
@@ -395,7 +414,10 @@ Item {
                     // Say what the wait is for, rather than showing an empty gap between
                     // pressing Pair and the code appearing.
                     Label {
+                        // Suppressed while `note` is set: startRemote() already puts its own
+                        // "publishing" line up, and two of them at once reads as a stutter.
                         visible: root.pairUri !== "" && !root.ready && !root.connected
+                                 && root.note === ""
                         text: "Publishing your onion address — the code appears in a moment."
                         color: root.textDim; font.pixelSize: 12
                         Layout.fillWidth: true; wrapMode: Text.WordWrap
