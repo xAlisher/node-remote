@@ -82,6 +82,20 @@ fun NodeState.isStarting() = status == "Starting"
 /** The user asked for the node to be off, and it is. Neutral — not a failure, not red. */
 fun NodeState.isStopped() = status == "Stopped"
 
+/**
+ * The reading is too old to keep asserting.
+ *
+ * Every displayed value — the pill, and the tiles fed from the last good JSON — is a
+ * SNAPSHOT. If polling stops (app backgrounded, watcher off, desktop gone) nothing clears
+ * them, so the app kept showing "Online" with live-looking Height/Peers while Basecamp had
+ * been down for minutes. A frozen frame presented as current is the same lie as a stale log
+ * line presented as state.
+ *
+ * 45s: the phone polls every 10s foreground / 15s backgrounded, so three missed polls.
+ */
+fun NodeState.isStale(nowMillis: Long) =
+    answered && atMillis > 0 && (nowMillis - atMillis) > 45_000
+
 fun NodeState.isRejected() = !answered && error.startsWith("HTTP 4")
 
 /**

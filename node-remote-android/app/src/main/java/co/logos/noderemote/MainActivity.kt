@@ -278,6 +278,14 @@ class MainActivity : ComponentActivity() {
             while (wantConnected) { refresh(); delay(10_000) }
         }
 
+        // Drives staleness. The poll loop only recomposes when a reading SUCCEEDS, so with
+        // the desktop gone nothing would ever re-evaluate how old the last frame is and the
+        // UI would sit on it indefinitely. This ticks regardless of the network.
+        var nowMs by remember { mutableLongStateOf(System.currentTimeMillis()) }
+        LaunchedEffect(wantConnected) {
+            while (wantConnected) { nowMs = System.currentTimeMillis(); delay(5_000) }
+        }
+
         val connected = wantConnected
         // Only a frame the DESKTOP answered counts. A failed fetch is not knowledge of
         // the node's state, and treating it as such made the app show "Start node" —
@@ -379,7 +387,15 @@ class MainActivity : ComponentActivity() {
                         // Secondary line: how the PHONE is doing. Kept separate from the
                         // node's own state pill so it is always clear which one is unhappy.
                         val (txt, col) = when (link) {
-                            Link.CONNECTED -> "Connected via Tor" to LogosColors.green500
+                            // A stale reading cannot claim a live link. `link` is only
+                            // assigned inside refresh(), so when polling stops it keeps its
+                            // last value — the app read "Connected via Tor" while the
+                            // desktop's tor had died with Basecamp (it is a child of the
+                            // module host; dieWithParent takes it down). Verified down on
+                            // the rig while the phone still claimed Connected.
+                            Link.CONNECTED ->
+                                if (state.isStale(nowMs)) "Connecting via Tor" to LogosColors.orange300
+                                else "Connected via Tor" to LogosColors.green500
                             Link.CONNECTING -> "Connecting via Tor" to LogosColors.orange300
                             Link.NO_INTERNET -> "No internet" to LogosColors.red500
                             Link.DISCONNECTED -> "Disconnected" to LogosColors.gray400
@@ -470,7 +486,7 @@ class MainActivity : ComponentActivity() {
                         }
                     }
                     when (tab) {
-                        0 -> StatusTab(state, rawStatus, note) {
+                        0 -> StatusTab(state, rawStatus, note, nowMs) {
                             if (!hasData) {
                                 CircularProgressIndicator(Modifier.size(18.dp),
                                     strokeWidth = 2.dp, color = LogosColors.orange300)

@@ -85,9 +85,14 @@ data class Proposal(val id: String, val txs: Int, val removed: Int, val time: St
 }
 
 @Composable
-fun StatusTab(s: NodeState, raw: String, note: String = "",
+fun StatusTab(s: NodeState, raw: String, note: String = "", nowMs: Long = 0L,
               control: @Composable () -> Unit = {}) {
-    val o = remember(raw) { runCatching { JSONObject(raw) }.getOrNull() }
+    // A STALE reading must not be rendered as current. raw is only rewritten on a SUCCESSFUL
+    // poll, so with the desktop gone the tiles below keep asserting the last Height/Peers/
+    // Blend/Balance indefinitely — the app read "Online" with live-looking numbers while
+    // Basecamp had been down for minutes.
+    val stale = nowMs > 0 && s.isStale(nowMs)
+    val o = remember(raw, stale) { if (stale) null else runCatching { JSONObject(raw) }.getOrNull() }
 
     Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(16.dp),
            verticalArrangement = Arrangement.spacedBy(12.dp)) {
@@ -102,7 +107,17 @@ fun StatusTab(s: NodeState, raw: String, note: String = "",
         val nodeErr = s.error.takeIf { it.isNotEmpty() && s.status == "Error" }
         val shown = note.takeIf { it.isNotEmpty() } ?: nodeErr
         if (shown != null) ErrorCard(shown, control)
-        else NodeStateBlock(s, control)
+        else NodeStateBlock(s, control, stale)
+
+        // Say HOW old, rather than silently blanking the screen. "Last reading 6 min ago"
+        // is information; a bare "Waiting for data…" with no history is not.
+        if (stale) {
+            val mins = ((nowMs - s.atMillis) / 60_000).toInt()
+            Text(if (mins >= 1) "Last reading $mins min ago — can't reach your node now"
+                 else "Last reading moments ago — can't reach your node now",
+                 style = MaterialTheme.typography.bodySmall,
+                 color = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
 
         // A working-but-busy node explains itself in plain text under the state, not in the
         // red card. Red is for things you must act on.
@@ -248,11 +263,15 @@ fun fmtLgo(raw: String): String {
 }
 
 @Composable
-private fun NodeStateBlock(s: NodeState, control: @Composable () -> Unit = {}) {
+private fun NodeStateBlock(s: NodeState, control: @Composable () -> Unit = {},
+                           stale: Boolean = false) {
     val (label, color) = when {
         // A 4xx is an ANSWER — the desktop heard us and refused. Showing the same spinner
         // as "no reply yet" hides a fixable problem behind an infinite wait.
         s.isRejected() -> "Not authorised — pair again" to LogosColors.red500
+        // Stale outranks every healthy label: we are not entitled to say "Online" from a
+        // reading we know is minutes old.
+        stale -> "Waiting for data…" to LogosColors.gray400
         !s.answered -> "Waiting for data…" to LogosColors.gray400
         // Alive but replaying its database. 1-click calls this exact state "Recovering
         // chain" (NodeDashboardView _statusDisplay), so we use its words. The block below
