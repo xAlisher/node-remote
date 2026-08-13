@@ -11,9 +11,17 @@
 
 #include <openssl/rand.h>
 
+// POSIX, on every platform we target. NOT <csignal>: that header declares std::raise and
+// std::signal, while kill() is POSIX and lives in <signal.h>. glibc happens to pull the
+// POSIX declarations into the global namespace anyway, so the Linux build was fine and the
+// mistake was invisible — libc++ on macOS does not, and the darwin build failed with
+// "no member named 'kill' in the global namespace". It was also guarded behind Q_OS_LINUX,
+// so macOS got no signal header at all.
+#include <signal.h>
+#include <sys/types.h>
+
 #ifdef Q_OS_LINUX
-#include <csignal>
-#include <sys/prctl.h>
+#include <sys/prctl.h>   // PR_SET_PDEATHSIG — genuinely Linux-only
 #endif
 
 namespace {
