@@ -192,13 +192,14 @@ fun StatusTab(s: NodeState, raw: String, note: String = "", nowMs: Long = 0L,
 
         // Identifiers get their own block with copy affordances — they are long hex that
         // nobody retypes, so the only useful interaction is copying.
-        if (o != null) {
-            Card(Modifier.fillMaxWidth()) {
-                Column(Modifier.padding(vertical = 4.dp)) {
-                    CopyRow("tip", o.optString("tip"))
-                    CopyRow("lib", o.optString("lib"))
-                    CopyRow("peer id", o.optString("peerId"))
-                }
+        // Always rendered. Hiding the whole card when disconnected made the page jump and
+        // said nothing; the rows now show "—" like every other field, so the layout is
+        // stable and the absence is explicit rather than implied by a gap.
+        Card(Modifier.fillMaxWidth()) {
+            Column(Modifier.padding(vertical = 4.dp)) {
+                CopyRow("tip", o?.optString("tip").orEmpty())
+                CopyRow("lib", o?.optString("lib").orEmpty())
+                CopyRow("peer id", o?.optString("peerId").orEmpty())
             }
         }
     }
@@ -391,7 +392,10 @@ private fun Tile(label: String, value: String, m: Modifier = Modifier,
 
 @Composable
 private fun CopyRow(label: String, value: String) {
-    if (value.isEmpty()) return
+    // Empty renders as "—" rather than vanishing: a missing row is indistinguishable from a
+    // row that was never there, and dropping it mid-list shifts everything below.
+    val shown = value.ifEmpty { "—" }
+    val hasValue = value.isNotEmpty()
     val clip = LocalClipboardManager.current
     var copied by remember { mutableStateOf(false) }
     LaunchedEffect(copied) { if (copied) { delay(1400); copied = false } }
@@ -400,12 +404,17 @@ private fun CopyRow(label: String, value: String) {
         Column(Modifier.weight(1f)) {
             Text(label, style = MaterialTheme.typography.labelMedium,
                  color = MaterialTheme.colorScheme.onSurfaceVariant)
-            Text(value, fontFamily = FontFamily.Monospace,
+            Text(shown, fontFamily = FontFamily.Monospace,
                  style = MaterialTheme.typography.bodySmall,
+                 color = if (hasValue) LogosColors.white else LogosColors.gray400,
                  maxLines = 2, overflow = TextOverflow.Ellipsis)
         }
-        IconButton(onClick = { clip.setText(AnnotatedString(value)); copied = true }) {
-            CopyGlyph(if (copied) LogosColors.green500 else LogosColors.gray400)
+        // Nothing to copy when there is no value — a live-looking copy button on a dash
+        // invites a tap that silently puts "—" on the clipboard.
+        IconButton(enabled = hasValue,
+                   onClick = { clip.setText(AnnotatedString(value)); copied = true }) {
+            CopyGlyph(if (copied) LogosColors.green500
+                      else if (hasValue) LogosColors.gray400 else LogosColors.gray320)
         }
     }
 }
