@@ -467,12 +467,36 @@ std::string NodeRemoteImpl::stopNode()
     } else {
         const QString err = QString::fromStdString(res.error);
         if (err.contains(QLatin1String("not running"), Qt::CaseInsensitive)) {
-            // Idempotent: stopping an already-stopped node is success, not an error. This
-            // is what surfaced the scary "deploy config" card on the phone. The user's
-            // intent is still "stopped", so record it.
-            g_probe->writeIntent(NodeProbe::Intent::Stopped);
-            r["ok"] = true;
-            r["code"] = "already_stopped";
+            // VERIFY before believing it. blockchain_module answers "not running" for two
+            // very different situations, and treating them alike reports a false success:
+            //
+            //   (a) the node really is stopped        -> idempotent success
+            //   (b) the node is RUNNING but was started by a DIFFERENT blockchain_module
+            //       client (e.g. the 1-click desktop UI). Node lifecycle is INSTANCE-BOUND,
+            //       the same way the wallet RPCs are, so this module cannot see — or stop —
+            //       a node it did not start.
+            //
+            // Observed live: /v1/stop returned {"ok":true,"code":"already_stopped"} while
+            // the node was serving at height 23018. The caller trusted that success and
+            // waited for a stop that was never attempted. Worse, it wrote intent=stopped
+            // for a running node, which the reachability self-heal then flipped back to
+            // started — so the two fought each other every poll.
+            const QJsonObject st = QJsonDocument::fromJson(g_probe->statusJson()).object();
+            if (st.value("reachable").toBool()) {
+                r["ok"] = false;
+                r["code"] = "not_owned";
+                r["error"] = QStringLiteral(
+                    "This node was started outside Node Remote, so it can only be stopped "
+                    "where it was started — use Stop node in the Blockchain node app on the "
+                    "desktop.");
+            } else {
+                // Genuinely stopped. Idempotent: stopping an already-stopped node is
+                // success, not an error — this is what surfaced the scary "deploy config"
+                // card on the phone.
+                g_probe->writeIntent(NodeProbe::Intent::Stopped);
+                r["ok"] = true;
+                r["code"] = "already_stopped";
+            }
         } else {
             r["ok"] = false;
             r["error"] = err;

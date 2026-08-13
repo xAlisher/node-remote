@@ -18,9 +18,15 @@ if ! node_up; then echo "  not running"; else
   if [ -r "$TOKEN_FILE" ]; then
     T=$(cat "$TOKEN_FILE")
     for p in $(ss -ltn 2>/dev/null | grep -oE '127\.0\.0\.1:[0-9]+' | cut -d: -f2); do
-      c=$(curl -s -m 5 -o /dev/null -w '%{http_code}' -X POST -H "Authorization: Bearer $T" \
-              "http://127.0.0.1:$p/v1/stop" 2>/dev/null)
-      [ "$c" = "200" ] && { echo "  stop accepted on $p"; stopped=1; break; }
+      # Read the BODY, not just the HTTP code. /v1/stop answers 200 with {"ok":false} when
+      # it cannot stop the node — e.g. code "not_owned", a node started from the desktop UI,
+      # which blockchain_module will only stop from the client that started it. Trusting the
+      # 200 alone made this script wait 60s for a stop that was never attempted.
+      body=$(curl -s -m 8 -X POST -H "Authorization: Bearer $T" "http://127.0.0.1:$p/v1/stop" 2>/dev/null)
+      case "$body" in
+        *'"ok":true'*) echo "  stop accepted on $p: $body"; stopped=1; break ;;
+        *'"ok":false'*) echo "  stop REFUSED by the module: $body"; break ;;
+      esac
     done
   fi
   [ "$stopped" = "1" ] && for i in $(seq 1 60); do node_up || { echo "  stopped after ${i}s"; break; }; sleep 1; done
