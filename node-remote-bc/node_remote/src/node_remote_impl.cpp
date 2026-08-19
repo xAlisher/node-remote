@@ -5,6 +5,7 @@
 #include "onion_service.h"
 #include "pairing.h"
 #include "block_store.h"
+#include "claims_ledger.h"
 #include "vendor/qrcodegen.hpp"
 
 // The typed wrapper for blockchain_module. Generated at build time from the flake input
@@ -44,6 +45,7 @@ NodeRemoteImpl::NodeRemoteImpl()
     if (!g_probe) g_probe = new NodeProbe();
     m_onion = new OnionService();
     m_blocks = new BlockStore();
+    m_ledger = new ClaimsLedger();
     m_http  = new HttpSurface(g_probe);
 
     // A paired phone keeps its token across desktop restarts, so we must too. HttpSurface
@@ -90,6 +92,14 @@ NodeRemoteImpl::NodeRemoteImpl()
     m_http->setProposalsHandler([this] {
         return QByteArray::fromStdString(getProposals());
     });
+    m_http->setRewardsHandler([this] {
+        return QByteArray::fromStdString(getRewards());
+    });
+    // POST, like /v1/start and /v1/stop: a claim spends money, and a GET would let a
+    // prefetching client or a stray link burn a fee. HttpSurface enforces the method.
+    m_http->setClaimHandler([this] {
+        return QByteArray::fromStdString(claimRewards());
+    });
 }
 
 NodeRemoteImpl::~NodeRemoteImpl()
@@ -97,6 +107,7 @@ NodeRemoteImpl::~NodeRemoteImpl()
     if (m_onion) { m_onion->stop(); delete m_onion; m_onion = nullptr; }
     if (m_http)  { m_http->stop();  delete m_http;  m_http  = nullptr; }
     delete m_blocks; m_blocks = nullptr;
+    delete m_ledger; m_ledger = nullptr;
 }
 
 std::string NodeRemoteImpl::startRemote()
@@ -328,7 +339,13 @@ void NodeRemoteImpl::onContextReady()
     // number is never more than one cycle stale.
     if (!m_balanceTimer) {
         m_balanceTimer = new QTimer(m_onion);
-        QObject::connect(m_balanceTimer, &QTimer::timeout, m_onion, [this] { refreshBalance(); });
+        QObject::connect(m_balanceTimer, &QTimer::timeout, m_onion, [this] {
+            refreshBalance();
+            // Same tick, same thread, same re-entrancy guard. Sequential rather than a
+            // second timer: two timers could interleave two synchronous wallet calls, and
+            // stacking sync IPC is the shape that took the module down at ~80s.
+            refreshRewards();
+        });
         // 3s TICK, but refreshBalance() decides whether to act — see the guards there.
         // A bare 30s timer meant the balance could take half a minute to appear after a
         // start, because nothing observed the node coming up; a bare 3s timer would hammer
@@ -531,6 +548,231 @@ std::string NodeRemoteImpl::getProposals()
     const QString dir = cfg.isEmpty() ? QString()
                                       : QFileInfo(cfg).absolutePath() + QStringLiteral("/logs");
     return BlockStore::proposalsJson(dir, 200).toStdString();
+}
+
+// Refresh the claimable-voucher count. Runs on the module's timer, NOT on a request —
+// same constraint as refreshBalance(), for the same reason: wallet_get_claimable_vouchers
+// is synchronous IPC, and a handler that blocks on it cannot return, so the reply it is
+// waiting for can never be delivered.
+void NodeRemoteImpl::refreshRewards()
+{
+    if (!isContextReady()) return;
+
+    bool reachable = false;
+    {
+        QMutexLocker lk(&m_balanceMu);
+        reachable = m_lastReachable;
+        if (!reachable && m_vouchersReady >= 0) {
+            // The node went away. Drop the count rather than let the phone show a pool
+            // for a node that is not running — and a claim button gated on it.
+            m_vouchersReady = -1;
+            m_vouchersError.clear();
+        }
+    }
+    if (!reachable) return;
+
+    // Slower than the balance: the pool moves once per block led, which is minutes apart
+    // at best, and every tick here is a synchronous IPC call on the one thread allowed to
+    // make them. 30s is well inside the ~2h a claim takes to settle.
+    const qint64 nowSecs = QDateTime::currentSecsSinceEpoch();
+    if (m_vouchersReady >= 0 && (nowSecs - m_lastVouchersAt) < 30) return;
+
+    if (m_ipcBusy) return;
+    m_ipcBusy = true;
+    struct Clear { bool& b; ~Clear() { b = false; } } clear{m_ipcBusy};
+
+    const StdLogosResult v = modules().blockchain_module.wallet_get_claimable_vouchers();
+    if (!v.success) {
+        // Instance-bound, exactly like the balance RPCs: these answer only inside the
+        // blockchain_module that is actually running the node. Keep the last count and
+        // say why it is stale rather than reporting an empty pool, which would read as
+        // "nothing to claim" — a different and wrong statement.
+        QMutexLocker lk(&m_balanceMu);
+        m_vouchersError = QString::fromStdString(v.error);
+        return;
+    }
+
+    // UNWRAP FIRST. StdLogosResult::value is an nlohmann::json holding ANY JSON value, and
+    // this module hands back a *string* whose contents are the JSON — so dump() re-encodes
+    // it as a quoted, escaped string and parsing that yields neither an array nor an
+    // object. refreshBalance() above meets the same thing and strips the quotes by hand.
+    // Measured, not assumed: this route first reported "unrecognised" against a live node
+    // with a healthy wallet.
+    const std::string body = v.value.is_string() ? v.value.get<std::string>() : v.value.dump();
+
+    // The node returns its `available` bucket only. Two shapes are in the wild — a bare
+    // array, and an object wrapping one — so both are accepted rather than assuming the
+    // one this machine happens to return. VOUCHER-STATE-MAP §7: a shape that "obviously"
+    // matches has been wrong four times out of four here, and this made five.
+    const QJsonDocument vd = QJsonDocument::fromJson(QByteArray::fromStdString(body));
+    int n = -1;
+    if (vd.isArray()) {
+        n = vd.array().size();
+    } else if (vd.isObject()) {
+        const QJsonObject o = vd.object();
+        for (const char* k : {"available", "vouchers", "claimable"}) {
+            if (o.value(QLatin1String(k)).isArray()) { n = o.value(QLatin1String(k)).toArray().size(); break; }
+        }
+        if (n < 0 && o.value(QStringLiteral("count")).isDouble())
+            n = o.value(QStringLiteral("count")).toInt();
+    }
+
+    QMutexLocker lk(&m_balanceMu);
+    if (n < 0) {
+        // Parsed, but not into anything we recognise. Report that instead of guessing a
+        // number — a wrong pool count gates the claim button.
+        //
+        // CARRY THE EVIDENCE. The first version of this said only "unrecognised", which is
+        // exactly the silent-error shape VOUCHER-STATE-MAP §7 calls out: it named the
+        // symptom and cost a round of guessing to find the cause. qWarning is no use here
+        // (a module's stderr is never captured by logos_host), so the prefix rides out on
+        // the wire where it can actually be read.
+        m_vouchersError = QStringLiteral("unrecognised claimable-voucher response: %1")
+                              .arg(QString::fromStdString(body.substr(0, 120)));
+        return;
+    }
+    m_vouchersError.clear();
+    m_vouchersReady = n;
+    m_lastVouchersAt = nowSecs;
+}
+
+std::string NodeRemoteImpl::getRewards()
+{
+    // libSlot comes from the probe's cheap cached status read (the node's own REST API on
+    // loopback), not from IPC — this runs on the request path.
+    const QJsonObject st = QJsonDocument::fromJson(g_probe->statusJson()).object();
+    const qint64 libSlot = static_cast<qint64>(st.value(QStringLiteral("libSlot")).toDouble());
+
+    QJsonObject r = m_ledger->read(g_probe->userConfigPath(), libSlot);
+
+    int ready = -1;
+    QString vErr;
+    {
+        QMutexLocker lk(&m_balanceMu);
+        ready = m_vouchersReady;
+        vErr  = m_vouchersError;
+    }
+    r["ready"] = ready;                       // -1 = not read yet, distinct from an empty pool
+    if (!vErr.isEmpty()) r["readyError"] = vErr;
+
+    // The value of the pool is an ESTIMATE and is labelled as one all the way to the
+    // screen. The reward is read from ledger state when a claim executes and it does move
+    // (9,517 then 9,535 then 9,664 observed on this chain), so this is "vouchers x the
+    // most recent settled reward", never a promise of what a claim will pay.
+    qint64 lastReward = 0, lastFee = 0;
+    bool haveFee = false;
+    const QJsonArray claims = r.value(QStringLiteral("claims")).toArray();
+    for (const QJsonValue& v : claims) {
+        const QJsonObject row = v.toObject();
+        if (row.value(QStringLiteral("status")).toString() != QLatin1String("settled")) continue;
+        const qint64 rw = static_cast<qint64>(row.value(QStringLiteral("reward")).toDouble());
+        if (rw <= 0) continue;
+        lastReward = rw;
+        if (row.contains(QStringLiteral("fee"))) {
+            lastFee = static_cast<qint64>(row.value(QStringLiteral("fee")).toDouble());
+            haveFee = true;
+        }
+        break;                                // claims are newest-first
+    }
+    r["lastReward"] = lastReward;
+    if (haveFee) r["lastFee"] = lastFee;      // ABSENT, never 0, when no settled row prices it
+    if (ready > 0 && lastReward > 0) r["readyEstimate"] = ready * lastReward;
+
+    // Blocks led is NOT vouchers earned and the gap is not explainable from here: the
+    // wallet hides any voucher it cannot prove at the current tip and no API lists them.
+    // Sent so the phone can show the gap as a gap rather than implying the pool is the
+    // whole of what was earned (111 led / 10 claimed / 12 claimable, measured).
+    const QJsonArray props =
+        QJsonDocument::fromJson(QByteArray::fromStdString(getProposals())).array();
+    r["blocksLed"] = props.size();
+
+    return dump(r);
+}
+
+std::string NodeRemoteImpl::claimRewards()
+{
+    QJsonObject r;
+
+    // Refuse before spending anything if the pool is empty or unknown. The node would
+    // reject it anyway, but a local refusal costs no IPC and gives the phone a reason
+    // instead of a bare failure.
+    int ready = -1;
+    {
+        QMutexLocker lk(&m_balanceMu);
+        ready = m_vouchersReady;
+    }
+    if (ready == 0) {
+        r["ok"] = false;
+        r["code"] = "none_ready";
+        r["error"] = QStringLiteral("no vouchers ready to claim");
+        return dump(r);
+    }
+
+    // Sync IPC from the request path, the same as /v1/start and /v1/stop. That is
+    // acceptable HERE and not in getNodeStatus() because this is a rare, user-initiated
+    // action rather than a per-poll fetch: it cannot wedge a route that something else is
+    // about to poll, and the caller is waiting for exactly this answer.
+    if (m_ipcBusy) {
+        r["ok"] = false;
+        r["code"] = "busy";
+        r["error"] = QStringLiteral("the wallet is busy — try again in a moment");
+        return dump(r);
+    }
+    m_ipcBusy = true;
+    struct Clear { bool& b; ~Clear() { b = false; } } clear{m_ipcBusy};
+
+    const StdLogosResult res = modules().blockchain_module.leader_claim();
+    if (!res.success) {
+        r["ok"] = false;
+        r["code"] = "claim_failed";
+        // Pass the node's own words through. InsufficientFunds is the common one and it
+        // reports `available` without `required`, so the phone cannot compute the
+        // shortfall — it must not invent one.
+        r["error"] = QString::fromStdString(res.error);
+        return dump(r);
+    }
+
+    // leader_claim returns a tx hash and nothing else. The voucher it consumed and the
+    // fee it paid are both unknown until settlement, so neither is reported here.
+    const QString tx = QString::fromStdString(res.value.dump()).remove('"').trimmed();
+    r["ok"] = true;
+    r["code"] = "submitted";
+    r["tx"] = tx;
+
+    // WRITE-AHEAD, and it must happen now. The claim leaves no other trace on this
+    // machine — `leader_claim` appears zero times in the Basecamp log — so if this row is
+    // not written, no evidence that the press happened exists anywhere until the chain
+    // backfills it as settled roughly two hours later.
+    //
+    // Written to OUR file, never to the desktop's ledger: that one is rewritten by
+    // ui-host on a 20s load-mutate-save cycle, and a second writer would both lose rows
+    // and risk corrupting it. Both surfaces read both files. See pending_claims.h.
+    const QJsonObject st = QJsonDocument::fromJson(g_probe->statusJson()).object();
+    const qint64 atSlot = static_cast<qint64>(st.value(QStringLiteral("slot")).toDouble());
+    if (!m_ledger->recordSubmitted(g_probe->userConfigPath(), tx, atSlot)) {
+        // The claim SUCCEEDED — it is on the network and the fee is spent — but we could
+        // not record it. Report both, because the two facts need different actions: there
+        // is nothing to retry, and the row simply will not appear until settlement.
+        r["warning"] = QStringLiteral(
+            "The claim was submitted, but it could not be recorded locally — it will not "
+            "appear in the claims list until it settles.");
+    }
+
+    // Force the pool to re-read on the next tick. The claimed voucher moves into the
+    // node's `pending` bucket immediately, so `available` drops by one — and a stale
+    // count would leave the phone offering a claim for a voucher already reserved.
+    {
+        QMutexLocker lk(&m_balanceMu);
+        m_lastVouchersAt = 0;
+    }
+
+    // Deliberately NOT written to claims-history.json. That file is logos_node_1click's,
+    // and two writers on one file is how a ledger gets corrupted; the desktop's chain
+    // backfill recovers this claim as settled from the block events under our pk (see
+    // VOUCHER-STATE-MAP §5). What is lost by not writing is the submitted-at timestamp,
+    // so a phone-initiated claim appears in the ledger only once it settles. That is a
+    // real gap and the phone says so rather than pretending the row is there.
+    return dump(r);
 }
 
 std::string NodeRemoteImpl::startNode(const std::string& configPath,

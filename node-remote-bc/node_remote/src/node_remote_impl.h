@@ -10,6 +10,7 @@ class OnionService;
 class QTimer;
 class BlockStore;
 class HttpSurface;
+class ClaimsLedger;
 
 /**
  * @brief Remote command surface for the Logos blockchain node.
@@ -75,6 +76,36 @@ public:
     /// Blocks THIS node proposed: [{id,txs,removed,time}]. Scraped from the node's logs —
     /// blockchain_module exposes no proposals API.
     std::string getProposals();
+
+    /// Leader rewards: the claimable-voucher pool plus the permanent claims ledger.
+    /// {ready,readyEstimate,lastReward,claims:[…],summary:{…},stale,error}
+    ///
+    /// Two sources, because they are two different shapes and only one of them is ours:
+    ///   ready*  — live, from blockchain_module.wallet_get_claimable_vouchers (cached on
+    ///             the timer, never fetched in the handler — the wallet RPCs are
+    ///             synchronous IPC and wedge the route, see getNodeStatus).
+    ///   claims  — read from the file logos_node_1click maintains. It is a ui_qml module,
+    ///             so its getLeaderClaims() cannot be called from here at all; see
+    ///             claims_ledger.h for why a file is the supported path and not a hack.
+    ///
+    /// "ready" is deliberately NOT called "pending". The node computes both an `available`
+    /// and a `pending` bucket and the HTTP layer forwards only `available`; the desktop UI
+    /// spent a release labelling available vouchers "pending", which named the one state
+    /// the operator can never see. Do not reuse the word.
+    std::string getRewards();
+
+    /// Claim ONE leader reward voucher. Returns {"ok":bool,"tx":"<hash>","error":"…"}.
+    ///
+    /// The node picks the voucher itself (available.next()) and returns only a tx hash —
+    /// the voucher nullifier and the fee are unknown until the claim settles, which is why
+    /// the phone must not print either as a fact at press time.
+    ///
+    /// ONE claim per call, deliberately. Each call spends a distinct voucher and a fresh
+    /// fee, and a desktop button that stayed enabled through a press turned one intended
+    /// claim into nine — 37,557 LGO of fees (VOUCHER-STATE-MAP §3). The caller-side
+    /// in-flight lock is not decoration; it is the fix for a bug that has already cost
+    /// real money on this machine.
+    std::string claimRewards();
 
     /// Begin pairing: mint an X25519 client-auth keypair, pre-authorize it, and mint a
     /// one-time enrollment token. Returns {uri, sas, expiresAt, deviceKey}.
@@ -156,8 +187,18 @@ private:
     bool    m_lastReachable = false;
     qint64  m_lastBalanceAt = 0;      // timer thread only
 
+    // Claimable-voucher pool, refreshed on the same timer as the balance and for the same
+    // reason: wallet_get_claimable_vouchers is synchronous IPC, so a request-path fetch
+    // deadlocks the route against its own reply. Guarded by m_balanceMu with the balance
+    // strings — one lock for everything the timer writes and the request path reads.
+    void refreshRewards();
+    int     m_vouchersReady = -1;    // -1 = never successfully read, distinct from 0
+    QString m_vouchersError;
+    qint64  m_lastVouchersAt = 0;    // timer thread only
+
     OnionService* m_onion = nullptr;
     BlockStore*   m_blocks = nullptr;
+    ClaimsLedger* m_ledger = nullptr;
     HttpSurface*  m_http  = nullptr;
     unsigned short m_port = 0;
 };

@@ -88,6 +88,14 @@ quint16 HttpSurface::listen()
                     [this, control](const QHttpServerRequest& req) {
                         return control(m_stop, req);
                     });
+    // Claiming spends a voucher and pays a fee, so it belongs with start/stop/wipe and
+    // not with the read routes. POST-only matters more here than anywhere else on this
+    // surface: a GET is retried freely by proxies and prefetched by clients, and each
+    // retry would be a separate claim with a separate fee.
+    m_server->route("/v1/claim", QHttpServerRequest::Method::Post,
+                    [this, control](const QHttpServerRequest& req) {
+                        return control(m_claim, req);
+                    });
 
     // Read routes for the Blocks / Proposals tabs. GET is correct here — they are
     // side-effect free, unlike /v1/start and /v1/stop.
@@ -104,6 +112,20 @@ quint16 HttpSurface::listen()
     });
     m_server->route("/v1/proposals", [this, readRoute](const QHttpServerRequest& r) {
         return readRoute(m_proposals, r);
+    });
+    // Not readRoute: its unwired fallback is `[]`, and rewards answers with an OBJECT.
+    // A client parsing `[]` as the payload would read "no vouchers, no claims, no error"
+    // out of what is actually a build that forgot to wire the handler.
+    m_server->route("/v1/rewards", [this](const QHttpServerRequest& req) {
+        if (!authorized(req))
+            return QHttpServerResponse("application/json",
+                                       QByteArrayLiteral(R"({"error":"unauthorized"})"),
+                                       QHttpServerResponder::StatusCode::Unauthorized);
+        if (!m_rewards)
+            return QHttpServerResponse("application/json",
+                                       QByteArrayLiteral(R"({"error":"not wired"})"),
+                                       QHttpServerResponder::StatusCode::ServiceUnavailable);
+        return QHttpServerResponse("application/json", m_rewards());
     });
 
     m_tcp = new QTcpServer(this);
