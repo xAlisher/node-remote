@@ -97,6 +97,32 @@ effect immediately.
 What is stored on the desktop: the onion service keys, `authorized_clients/`, and the bearer
 token — all under the module's own data directory, owner-readable only.
 
+From 0.2.0, claiming a leader reward from the phone also writes `pending-claims.json` beside
+the node's `user_config.yaml`. It holds the transaction hash, the time and the slot of claims
+this module submitted, and nothing else — no keys, no addresses. Each row is removed as soon
+as the desktop's own ledger reports that transaction. It exists because a claim otherwise
+leaves no trace on your machine at all, so without it there would be no local evidence that
+you pressed the button.
+
+## Leader rewards are public, and proposals are not
+
+These sit next to each other in the same tab and have **opposite** privacy properties. Getting
+this backwards is more costly than any display bug, so it is stated rather than left to
+inference.
+
+**Proposals are private.** Cryptarchia leadership uses a per-note-derived key rather than a
+stable identity, so an observer cannot match blocks on chain to you. That is precisely why the
+Proposals tab is scraped from your node's own log — the information is not obtainable any
+other way.
+
+**Claims are public.** A `LeaderClaimOp` carries your `pk` in cleartext on chain. Anyone can
+count a public key's claims and total its rewards, with no keys and no access to your node.
+The zero-knowledge proof protects a different thing: it hides *which block* earned the voucher,
+so your proposals cannot be linked to your claims. It does not hide the claims.
+
+Node Remote therefore leaks nothing new by showing you your own claims — the data is already
+public under that key. But do not assume a claim is as private as the block that earned it.
+
 ## Permissions the app asks for
 
 | Permission | Why |

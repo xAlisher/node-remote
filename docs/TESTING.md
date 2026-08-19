@@ -17,6 +17,19 @@ separate machine — not inferred from a build succeeding.
   node's own REST API and matching the desktop's 1-click module field for field.
 - **QR encoding.** A full 192-character pairing URI encodes to a 57×57 matrix that an
   independent decoder (zbar) reads back byte-identical.
+- **Leader rewards, read path** (0.2.0). `/v1/rewards` returned the live ledger — 56 rows,
+  24 settled, `claimed` 230,023 LGO, `net` 168,169 — and an independent recount of the raw
+  `claims-history.json` produced identical figures. 10 of the 24 settled rows have no
+  computable fee, so the "fee unknown" path is exercised by real data, not a fixture.
+- **Claiming from the phone** (0.2.0). A real claim: the pool moved 6 → 5, `inFlight` 7 → 8,
+  the row appeared as **Submitted on both the phone and the desktop**, and `claimed` did NOT
+  move — a submitted claim must not count until it settles.
+- **One writer per file** (0.2.0). During that claim `claims-history.json` stayed at 56 rows
+  while the new row sat in `pending-claims.json`. One row, one owner, no double count. The
+  handoff was then proven on a copied ledger: once the desktop adopted the tx as settled, the
+  pending file pruned to empty and `claimed` rose by exactly one reward.
+- **Copy button.** The tx hash copied from a claim row pasted back as the full 64 characters,
+  verified by pasting into a browser field — not the truncated string shown on screen.
 - **Signing gate, both directions.** Without the keystore, `assembleRelease
   -PassertReleaseSigned` fails and produces no APK. With it, the release APK is signed
   `CN=Node Remote` / `6d80db34…51ae74` — confirmed with apksigner against the pinned digest,
@@ -106,6 +119,30 @@ onion, with no phone involved:
 ## What to test in this release
 
 <!-- Newest first. One block per release; add a new ### section at the top. -->
+
+### v0.2.0 — leader rewards
+
+Needs the **Blockchain node** module at 0.2.15 or later on the desktop. Older versions still
+work for reading, but will not show a claim you make from the phone until it settles.
+
+1. Open the **Rewards** tab. If the node has led blocks, the tab title carries a count and the
+   pool reads "N vouchers" with an estimated value. Check the numbers against the Blockchain
+   node module's own Leader Rewards panel — **they must agree exactly.** If they differ, that
+   is the bug; report the two figures.
+2. Look at a settled claim row. It should read `+reward − fee = +net`, in whole LGO with
+   thousands separators (a reward is around 9,664 LGO — if you see something near 0.97, the
+   unit bug is back). Some rows will say **"fee unknown"** instead: that is correct, not a
+   failure — those claims cannot be priced, and a 0 there would be a lie.
+3. Tap the copy icon on a claim's `tx`. It should copy all 64 characters, not the two lines
+   shown.
+4. **Claiming spends real money.** With vouchers ready, press **Claim one**: the dialog must
+   name the fee before you confirm. After confirming, the button locks, the claims list gains
+   a **Submitted** row within seconds, and the same row appears on the desktop within ~20s.
+   The pool count drops — currently 10–15s later than everything else
+   ([#13](https://github.com/xAlisher/node-remote/issues/13)), which is known and not a fault.
+5. A Submitted claim stays Submitted for **about two hours**. That is finalization running
+   behind the tip, not something stuck. Nothing is lost if it never lands: it becomes
+   "Expired · voucher returned to the pool · no fee charged".
 
 ### v0.1.1 — pairing UI hotfixes
 

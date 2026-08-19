@@ -90,6 +90,17 @@ your wallet keys and settings survive. Regenerate backs up the config first — 
 node started, balance changed, block proposed. Each is a separate toggle, and notifications
 can be made private (`VISIBILITY_SECRET`) so the lock screen shows nothing.
 
+**Leader rewards** — a Rewards tab with the claimable-voucher pool, the permanent claims
+ledger, and a Claim button, with a count on the tab title when vouchers are waiting. The
+ledger is the one the Blockchain node module keeps; the phone reads it rather than computing
+a second, disagreeing copy. A claim made from the phone shows up on the desktop too, and vice
+versa — see [what the two share](#the-two-halves-share-one-ledger).
+
+Claiming spends a voucher and pays a fee, so the button is gated on having a voucher and
+enough balance, disables itself while a claim is in flight, and names the cost before the
+press. That is not politeness: an earlier desktop button which did none of it turned one
+intended claim into nine, and nine fees.
+
 ## What it does not do
 
 It does **not** hide from your internet provider that you use Tor, on either end. See
@@ -100,6 +111,26 @@ It does not let you edit peers from the phone. `generate_user_config` only write
 it is given, so a naive remote "add a peer" silently resets `net_port`, `blend_port` and
 `external_address` — and rewrites the file holding your funding key. Peers are read-only
 here on purpose.
+
+## The two halves share one ledger
+
+A leader claim leaves no trace on the machine that made it — the node logs nothing — so the
+desktop module keeps a `claims-history.json` beside the node's config, reconciled against the
+chain. Node Remote reads that file rather than reimplementing the reconciliation, which means
+the two surfaces cannot drift into disagreeing about your money.
+
+Claiming from the phone needs the reverse direction, and the obvious answer is wrong: the
+desktop rewrites that ledger on a 20s load-mutate-save cycle, so a second writer would lose
+rows and could corrupt it. Instead **each side owns exactly one file and reads both**:
+
+| File | Written by | Read by |
+|---|---|---|
+| `claims-history.json` | the Blockchain node module | both |
+| `pending-claims.json` | `node_remote` | both |
+
+There is no lock, because there is never contention. **Neither module requires the other** —
+a missing file reads as empty on both sides, so the Blockchain node module behaves exactly as
+before for anyone who has not installed Node Remote.
 
 ## Build
 
@@ -123,8 +154,13 @@ See [docs/SIGNING.md](docs/SIGNING.md).
 ## Status
 
 Pre-alpha, and honest about it. Pairing, status, control, the QR path and the Tor link are
-proven end to end on real hardware — a Pixel talking to a node on another machine. Some
-notification events have never fired live. The F-Droid listing is not published yet.
+proven end to end on real hardware — a Pixel talking to a node on another machine. As of
+0.2.0 that includes leader rewards: a real claim was submitted from the phone and appeared on
+both surfaces, against a live node.
+
+Some notification events have never fired live ([#10](https://github.com/xAlisher/node-remote/issues/10)).
+The claimable-voucher count trails a claim by 10–15 seconds
+([#13](https://github.com/xAlisher/node-remote/issues/13)) — the number is correct, just late.
 
 ## Licence
 
