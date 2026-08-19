@@ -132,3 +132,17 @@ deliberate divergence is the empty string, where JS `Number("")` is 0 and we pri
 - Nix flakes see only git-tracked files; a new untracked source fails as a CMake
   "Cannot find source file", not a silent stale build.
 - Select adb devices by `ro.product.model` and fail closed. Never `head -1`.
+- **`ls -d result` is not a build result.** The symlink survives from the previous build, so it
+  succeeds after a build that failed or never ran — same shape as trusting `BUILD SUCCESSFUL in
+  1s`, which is up-to-date caching. Check the *outcome*: `nix build --rebuild`, `nm -DC` for the
+  new symbol, `strings -el` for a new literal, or the JUnit XML for tests. Not the artifact's
+  existence.
+- **`git push --follow-tags` does not push a lightweight tag** — only annotated ones. `git tag
+  vX.Y.Z` then `--follow-tags` pushes the commit and silently no tag, and a tag-triggered CI
+  release simply never fires. Verify with `git ls-remote --tags origin <tag>`, or tag with `-a`.
+- **`tools/dev-install-khidr.sh` accepts any HTTP 200 as a node stop.** It sweeps every loopback
+  port POSTing `/v1/stop`; an unrelated local service answering 200 makes it print "stop accepted
+  on port N" for a node it never touched. Its own guard then refuses, so nothing breaks — but the
+  line is misleading. Confirm the port with `/v1/ping` == `{"ok":true}` before believing it.
+- The module's own HTTP port is **ephemeral and changes every launch**. Find it by probing
+  `/v1/ping` — never hardcode a port from a previous session.

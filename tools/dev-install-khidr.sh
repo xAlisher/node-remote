@@ -37,10 +37,18 @@ else
     T=$(cat "$TOKEN_FILE")
     # node_remote's own control route. Only reachable while its HTTP surface is up, which
     # requires the pane to have started the remote at least once this session.
-    for p in $(ss -ltn 2>/dev/null | grep -oE '127\.0\.0\.1:[0-9]+' | cut -d: -f2); do
-      code=$(curl -s -m 5 -o /dev/null -w '%{http_code}' -X POST \
+    # IDENTIFY the port before POSTing to it. This used to POST /v1/stop at EVERY loopback
+    # port and take any 200 as success — and an unrelated local service answering 200 made it
+    # print "stop accepted on port 9102" for a node it had never touched (observed 2026-08-19;
+    # the guard below then correctly refused, so the only cost was a misleading line and a
+    # wasted cycle). /v1/ping is unauthenticated precisely so it can be used to identify us.
+    for p in $(ss -ltn 2>/dev/null | grep -oE '127\.0\.0\.1:[0-9]+' | cut -d: -f2 | sort -u); do
+      [ "$(curl -s -m 2 "http://127.0.0.1:$p/v1/ping" 2>/dev/null)" = '{"ok":true}' ] || continue
+      echo "  node_remote surface on port $p"
+      code=$(curl -s -m 20 -o /dev/null -w '%{http_code}' -X POST \
                   -H "Authorization: Bearer $T" "http://127.0.0.1:$p/v1/stop" 2>/dev/null)
       if [ "$code" = "200" ]; then echo "  stop accepted on port $p"; stopped=1; break; fi
+      echo "  stop returned $code on port $p"
     done
   else
     echo "  no device_token — cannot reach node_remote's control route"
