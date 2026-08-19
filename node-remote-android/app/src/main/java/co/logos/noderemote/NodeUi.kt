@@ -267,41 +267,48 @@ private fun ErrorCard(text: String, control: @Composable () -> Unit = {}) {
 }
 
 /**
- * LGO display, ported from logos_node_1click's NodeDashboardView.qml (_fmtBalance +
- * _lgoTrim) so the phone and the desktop tile never disagree about the same wallet.
+ * LGO display, ported from logos-blockchain-ui's amounts.js so the phone and the desktop
+ * never disagree about the same wallet.
  *
- * wallet_get_balance returns BASE UNITS; 1 LGO = 10^4 base units. 2000000000000 base
- * = 200,000,000 LGO -> "200M LGO". Abbreviated because the full number does not fit a
- * stat row, and suffixed with the ticker because a bare number is not a balance.
+ * THE CHAIN'S RAW u64 IS LGO. There is no sub-unit and nothing is divided.
+ * `core/src/mantle/transactions/gas.rs` cites the spec as `P_STR(0) = 1 LGO/gas` and
+ * implements it as `GasPrice::new(1)` — a 1:1 mapping. This app used to divide by an
+ * invented `baseUnitsPerLgo = 10000`, so every balance it has ever shown read 10,000x too
+ * small; the desktop removed the same division and left the reasoning in amounts.js. No
+ * client anywhere divides. See issue #12.
  *
- * Checked against the QML original on 11 inputs; 10 are byte-identical. The one deliberate
- * divergence is the EMPTY string: JavaScript's Number("") is 0, so 1-click prints "0 LGO"
- * for a missing balance. That is a JS coercion wart, and claiming a wallet holds zero when
- * we simply have no figure is exactly the kind of confident-and-wrong this app keeps
- * getting bitten by. We print "— LGO". The call site filters empty before it gets here, so
- * the two can never actually disagree on screen.
+ * Anything below 1e6 prints IN FULL rather than abbreviated. Rewards and fees live around
+ * 9,664 and 4,602, and "9.66K LGO" for a reward is both uglier and less precise than the
+ * number itself; only a node balance is ever large enough to need shortening.
+ *
+ * The one deliberate divergence from the JS is the EMPTY string: JavaScript's Number("")
+ * is 0, so the QML prints "0 LGO" for a missing balance. That is a coercion wart, and
+ * claiming a wallet holds zero when we simply have no figure is exactly the kind of
+ * confident-and-wrong this app keeps getting bitten by. We print "— LGO".
  */
-private const val BASE_UNITS_PER_LGO = 10_000.0
-
 private fun lgoTrim(x: Double): String {
     val r = Math.round(x * 100) / 100.0
     // Match QML's Number.toString(): drop a trailing ".0" rather than printing "200.0M".
     return if (r == Math.floor(r) && !r.isInfinite()) r.toLong().toString() else r.toString()
 }
 
+/** Thousands separators, no ticker — amounts.js `plain()`. */
+fun grouped(n: Long): String = String.format("%,d", n)
+
 fun fmtLgo(raw: String): String {
     val n = raw.trim().trim('"').toDoubleOrNull() ?: return "— LGO"
-    val v = n / BASE_UNITS_PER_LGO
-    val a = Math.abs(v)
+    val a = Math.abs(n)
     val s = when {
-        a >= 1e12 -> lgoTrim(v / 1e12) + "T"
-        a >= 1e9  -> lgoTrim(v / 1e9) + "B"
-        a >= 1e6  -> lgoTrim(v / 1e6) + "M"
-        a >= 1e3  -> lgoTrim(v / 1e3) + "K"
-        else      -> lgoTrim(v)
+        a >= 1e12 -> lgoTrim(n / 1e12) + "T"
+        a >= 1e9  -> lgoTrim(n / 1e9) + "B"
+        a >= 1e6  -> lgoTrim(n / 1e6) + "M"
+        // In full, with separators. NOT abbreviated: see the note above.
+        else      -> grouped(n.toLong())
     }
     return "$s LGO"
 }
+
+fun fmtLgo(n: Long): String = fmtLgo(n.toString())
 
 @Composable
 private fun NodeStateBlock(s: NodeState, control: @Composable () -> Unit = {},
@@ -381,8 +388,9 @@ private fun Tile(label: String, value: String, m: Modifier = Modifier,
     }
 }
 
+/** Shared with RewardsTab — a 64-char hash wraps to two lines with a copy button. */
 @Composable
-private fun CopyRow(label: String, value: String) {
+fun CopyRow(label: String, value: String) {
     // Empty renders as "—" rather than vanishing: a missing row is indistinguishable from a
     // row that was never there, and dropping it mid-list shifts everything below.
     val shown = value.ifEmpty { "—" }
