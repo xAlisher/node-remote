@@ -58,6 +58,9 @@ public:
     void setWipeHandler(Handler h) { m_wipe = std::move(h); }
     void setRegenHandler(Handler h) { m_regen = std::move(h); }
     void setProposalsHandler(Handler h) { m_proposals = std::move(h); }
+    void setRewardsHandler(Handler h) { m_rewards = std::move(h); }
+    // Spends money. Wired as a CONTROL route, not a read route — see listen().
+    void setClaimHandler(Handler h) { m_claim = std::move(h); }
     void setStopHandler(Handler h)  { m_stop  = std::move(h); }
 
 private:
@@ -69,6 +72,8 @@ private:
     Handler m_wipe;
     Handler m_regen;
     Handler m_proposals;
+    Handler m_rewards;
+    Handler m_claim;
     Handler m_stop;
 
     QHttpServer* m_server = nullptr;

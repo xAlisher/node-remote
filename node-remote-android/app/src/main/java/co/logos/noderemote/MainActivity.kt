@@ -34,6 +34,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import okhttp3.MediaType.Companion.toMediaType
+import org.json.JSONObject
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
 
@@ -89,6 +90,12 @@ class MainActivity : ComponentActivity() {
         var rawStatus by remember { mutableStateOf("") }
         var blocks by remember { mutableStateOf<List<Block>>(emptyList()) }
         var proposals by remember { mutableStateOf<List<Proposal>>(emptyList()) }
+        var rewards by remember { mutableStateOf(Rewards()) }
+        // In-flight lock for a claim. Held from the press until the desktop answers, so a
+        // second press cannot start a second transaction. This is the fix for the incident
+        // the desktop panel documents: an always-enabled button turned one intended claim
+        // into nine, each spending a distinct voucher and a fresh fee.
+        var claiming by remember { mutableStateOf(false) }
         var busy by remember { mutableStateOf(false) }
         var note by remember { mutableStateOf("") }
         var confirm by remember { mutableStateOf<String?>(null) }   // "start" | "stop" | null
@@ -199,6 +206,10 @@ class MainActivity : ComponentActivity() {
                 if (state.reachable || state.isStopped()) note = ""
                 TorClient.get("http://$onion/v1/blocks", token).onSuccess { blocks = Block.list(it) }
                 TorClient.get("http://$onion/v1/proposals", token).onSuccess { proposals = Proposal.list(it) }
+                // Same rule as blocks/proposals: only rewritten on a SUCCESSFUL fetch, so a
+                // transient failure keeps the last good ledger rather than blanking a screen
+                // that is about to be correct again.
+                TorClient.get("http://$onion/v1/rewards", token).onSuccess { rewards = Rewards.parse(it) }
             }
             // Distinguish "no internet at all" from "Tor is up but the node is unreachable".
             // Never fall back to DISCONNECTED here: while the user wants to be connected,
@@ -216,6 +227,61 @@ class MainActivity : ComponentActivity() {
             }
             android.util.Log.i(TAG, "refresh state=${state.state} height=${state.height} " +
                                     "blocks=${blocks.size} proposals=${proposals.size} link=$link")
+        }
+
+        /**
+         * Submit ONE leader-reward claim.
+         *
+         * Kept separate from control() rather than folded into it, because the two differ in
+         * the one way that matters: a repeated start or stop is idempotent, and a repeated
+         * claim spends another voucher and another fee. So this holds its own in-flight lock
+         * for the whole round trip, and the button is bound to that lock rather than to the
+         * shared `busy` flag which other actions also clear.
+         */
+        suspend fun claim() {
+            if (claiming) return                  // belt as well as braces: the UI also disables
+            claiming = true
+            note = "submitting claim…"
+            val r = withContext(Dispatchers.IO) {
+                runCatching {
+                    val req = Request.Builder()
+                        .url("http://$onion/v1/claim")
+                        .post("".toRequestBody("application/json".toMediaType()))
+                        .header("Authorization", "Bearer $token")
+                        .build()
+                    TorClient.http().newCall(req).execute().use { it.body?.string().orEmpty() }
+                }
+            }
+            note = r.fold(
+                onSuccess = { body ->
+                    runCatching {
+                        val o = JSONObject(body)
+                        if (o.optBoolean("ok", false)) {
+                            val tx = o.optString("tx")
+                            // Say what actually happened and what happens next. "Claimed"
+                            // would be wrong — nothing is claimed until it settles, which
+                            // is hours away, and a success message that implies otherwise
+                            // is what makes people press again.
+                            "Claim submitted" +
+                                (if (tx.isNotEmpty()) " · ${tx.take(8)}…" else "") +
+                                ". It settles in about two hours."
+                        } else {
+                            o.optString("error").ifEmpty { "the claim was refused" }
+                        }
+                    }.getOrElse { body.take(200) }
+                },
+                // A failed round trip does NOT mean the claim failed. The request may have
+                // reached the node and the reply been lost, in which case a voucher is
+                // already reserved. Saying "claim failed" here would invite a second press
+                // that spends a second voucher, so the wording stays honest about not
+                // knowing and points at the ledger, which is where the truth will appear.
+                onFailure = { "Could not confirm the claim: ${it.message.orEmpty()}. " +
+                              "Check the claims list before trying again." },
+            )
+            claiming = false
+            // Re-read at once so the pool count and any new row land without waiting for
+            // the next poll tick.
+            refresh()
         }
 
         suspend fun control(path: String) {
@@ -520,11 +586,88 @@ class MainActivity : ComponentActivity() {
                         containerColor = LogosColors.gray900,
                         contentColor = LogosColors.orange300,
                     ) {
-                        listOf("Status", "Blocks", "Proposals").forEachIndexed { i, t ->
+                        // FOUR fixed tabs on a phone, one of them carrying a badge. A
+                        // TabRow splits the width evenly, so on a 360dp screen each tab gets
+                        // ~90dp — and Tab's default `text=` slot spends 16dp a side on
+                        // padding, leaving ~58dp. "Proposals" does not fit that at the
+                        // default 14sp, and "Rewards" plus a badge certainly does not: it
+                        // wraps to two lines or truncates mid-word.
+                        //
+                        // So this uses Tab's CONTENT overload rather than `text=`, which is
+                        // the only way to set the padding, and pairs it with 12sp labels that
+                        // never wrap. Measured worst case is "Proposals" at ~54dp inside
+                        // ~82dp of usable width, and Rewards + a 3-digit badge at ~72dp.
+                        //
+                        // NOT a ScrollableTabRow: it would fit any label, but it fits them by
+                        // pushing some off-screen, and a tab you cannot see is a tab nobody
+                        // presses. Four is few enough to show all four.
+                        listOf("Status", "Blocks", "Proposals", "Rewards").forEachIndexed { i, t ->
+                            // Only Rewards carries a count, and only when there is something
+                            // to act on. A badge reading "0" is a decoration that costs the
+                            // reader a glance to dismiss; absence says the same thing for
+                            // free. `badge` is null both when the pool is empty AND when it
+                            // has not been read yet — different states, but neither of them
+                            // is "you have vouchers waiting", which is the only thing a
+                            // badge should ever mean.
+                            val badge = if (t == "Rewards") rewards.badge else null
+                            val fg = if (tab == i) LogosColors.orange300 else LogosColors.white
                             Tab(selected = tab == i, onClick = { tab = i },
                                 selectedContentColor = LogosColors.orange300,
-                                unselectedContentColor = LogosColors.white,
-                                text = { Text(t, fontWeight = if (tab == i) FontWeight.Bold else FontWeight.Normal) })
+                                unselectedContentColor = LogosColors.white) {
+                                // THE BADGE MUST NOT PARTICIPATE IN CENTERING.
+                                // Laid out inline, it made the row centre the word AND the
+                                // badge as one unit, which pushes "Rewards" left by half the
+                                // badge's width — so that one label sat off-centre in its
+                                // cell while the other three were centred on themselves, and
+                                // the gaps between titles came out visibly uneven.
+                                //
+                                // The inner Box wraps the TEXT ONLY, so the text is what gets
+                                // centred in the tab. The badge is overlaid against that
+                                // box's top-right corner and offset outward, which takes it
+                                // out of the measured width entirely. All four labels are now
+                                // centred by the same rule, whether or not one carries a
+                                // count.
+                                Box(
+                                    Modifier.fillMaxWidth().padding(vertical = 12.dp),
+                                    contentAlignment = Alignment.Center,
+                                ) {
+                                    Box(contentAlignment = Alignment.Center) {
+                                        Text(
+                                            t,
+                                            color = fg,
+                                            fontSize = 12.sp,
+                                            lineHeight = 14.sp,
+                                            fontWeight = if (tab == i) FontWeight.Bold else FontWeight.Normal,
+                                            maxLines = 1,
+                                            // Clip rather than wrap. A wrapped label changes
+                                            // the height of the whole row and shifts
+                                            // every tab.
+                                            softWrap = false,
+                                        )
+                                        if (badge != null) {
+                                            Surface(
+                                                color = LogosColors.orange300,
+                                                shape = RoundedCornerShape(50),
+                                                modifier = Modifier
+                                                    .align(Alignment.TopEnd)
+                                                    .offset(x = 13.dp, y = (-9).dp),
+                                            ) {
+                                                Text(
+                                                    "$badge",
+                                                    color = LogosColors.gray900,
+                                                    fontWeight = FontWeight.Bold,
+                                                    fontSize = 10.sp,
+                                                    lineHeight = 11.sp,
+                                                    maxLines = 1,
+                                                    softWrap = false,
+                                                    modifier = Modifier.padding(
+                                                        horizontal = 4.dp, vertical = 1.dp),
+                                                )
+                                            }
+                                        }
+                                    }
+                                }
+                            }
                         }
                     }
                     when (tab) {
@@ -567,8 +710,21 @@ class MainActivity : ComponentActivity() {
                         // looking live while the desktop is gone.
                         1 -> BlocksTab(if (state.answered && !state.isStale(nowMs)) blocks
                                        else emptyList())
-                        else -> ProposalsTab(if (state.answered && !state.isStale(nowMs)) proposals
-                                             else emptyList())
+                        2 -> ProposalsTab(if (state.answered && !state.isStale(nowMs)) proposals
+                                          else emptyList())
+                        else -> RewardsTab(
+                            r = rewards,
+                            live = state.answered && !state.isStale(nowMs),
+                            // The claim gate compares a fee against the wallet's own figure,
+                            // so it must use balanceRaw — the chain's number, undivided. The
+                            // formatted string cannot be compared against anything.
+                            balanceRaw = runCatching {
+                                JSONObject(rawStatus).optString("balanceRaw")
+                                    .trim().trim('"').toLong()
+                            }.getOrDefault(0L),
+                            claiming = claiming,
+                            onClaim = { scope.launch { claim() } },
+                        )
                     }
                 }
             }

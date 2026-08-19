@@ -13,8 +13,12 @@
     # so `blockchain-module` (hyphen) is silently discarded and the build then dies on a
     # missing blockchain_module_api.h with no hint that the input name was the problem.
     #
-    # Pinned to 0.2.1 to match the installed blockchain_module. Bump in lockstep.
-    blockchain_module.url = "github:logos-blockchain/logos-blockchain-module/0.2.1";
+    # Pinned to match the INSTALLED blockchain_module, which is 0.2.2. Bump in lockstep:
+    # this generates the typed wrapper we call, so a pin behind the installed module means
+    # compiling against an API the running process may not have.
+    # 0.2.1 -> 0.2.2 is doc tests, a chain pin and the release; src/logos_blockchain_module.h
+    # is byte-identical between the tags, so this bump moves no API — it removes the skew.
+    blockchain_module.url = "github:logos-blockchain/logos-blockchain-module/0.2.2";
   };
 
   outputs = inputs@{ logos-module-builder, ... }:
