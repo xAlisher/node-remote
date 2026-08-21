@@ -54,6 +54,16 @@
   .btn-ghost{background:transparent;color:var(--text);border-color:var(--border)}
   .btn-ghost:hover{border-color:#3d3d3d;background:#131313}
   .hint{font-family:var(--mono);font-size:12px;color:var(--faint);margin-top:14px}
+  /* demo — vertical video player */
+  .demo{margin-top:64px;text-align:center}
+  .demo .kick{font-family:var(--mono);font-size:11px;letter-spacing:.14em;text-transform:uppercase;
+    color:var(--orange);margin:0 0 14px}
+  .demo-video{
+    display:block;margin:0 auto;width:100%;max-width:300px;height:auto;
+    aspect-ratio:540/1212;object-fit:cover;background:#000;
+    border:1px solid var(--border);border-radius:18px;
+    box-shadow:0 0 0 1px rgba(255,80,0,.10), 0 24px 60px -20px rgba(0,0,0,.8)}
+  .demo-cap{font-family:var(--mono);font-size:12px;color:var(--faint);margin:14px auto 0;max-width:40ch}
   /* features */
   .features{margin-top:64px;display:flex;flex-direction:column;gap:16px}
   .f{background:var(--panel);border:1px solid var(--border);border-left:3px solid var(--c);
@@ -84,6 +94,12 @@
     </div>
     <p class="hint">Add the repo in F-Droid, then install Node Remote · Android · no account, no Google</p>
   </header>
+
+  <section class="demo">
+    <p class="kick">See it live</p>
+    <video class="demo-video" src="app-demo.mp4" poster="app-demo-poster.jpg" controls preload="metadata" playsinline></video>
+    <p class="demo-cap">Node Remote on a real phone — pairing, status and control, over Tor</p>
+  </section>
 
   <main class="features">
     <section class="f" style="--c:var(--orange)">
