@@ -1,0 +1,128 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>node remote — control your Logos node from your phone, over Tor</title>
+<meta name="description" content="Node Remote is an independent Android app that watches, controls and notifies about your Logos blockchain node over a Tor onion service. No account, no server, no port forward.">
+<link rel="icon" href="logo.png" type="image/png">
+<link rel="icon" href="favicon-32.png" sizes="32x32" type="image/png">
+<link rel="icon" href="favicon-16.png" sizes="16x16" type="image/png">
+<link rel="apple-touch-icon" href="logo.png">
+<meta property="og:title" content="node remote">
+<meta property="og:description" content="Control your node from your phone.">
+<meta property="og:image" content="https://xalisher.github.io/node-remote/node-remote-website/og.png">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:image" content="https://xalisher.github.io/node-remote/node-remote-website/og.png">
+<meta property="og:type" content="website">
+<meta property="og:url" content="https://xalisher.github.io/node-remote/node-remote-website/">
+<style>
+  :root{
+    --canvas:#0A0A0A; --pane:#111; --panel:#161616; --border:#2a2a2a;
+    --text:#FAFAFA; --dim:#8b8f98; --faint:#5b616b;
+    --orange:#FF5000; --green:#22C55E; --blue:#1D9BF0; --red:#EF4444;
+    --mono:"SF Mono",ui-monospace,"JetBrains Mono","Roboto Mono",Menlo,Consolas,monospace;
+    --sans:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+  }
+  *{box-sizing:border-box}
+  html{-webkit-text-size-adjust:100%}
+  body{
+    margin:0;background:var(--canvas);color:var(--text);
+    font-family:var(--sans);line-height:1.5;
+    -webkit-font-smoothing:antialiased;
+  }
+  .wrap{max-width:620px;margin:0 auto;padding:72px 24px 56px}
+  /* hero */
+  .hero{text-align:center}
+  .icon{width:96px;height:96px;border-radius:22px;display:block;margin:0 auto 26px;
+    box-shadow:0 0 0 1px var(--border), 0 18px 50px -12px rgba(255,80,0,.28)}
+  .brand{font-family:var(--mono);font-weight:700;font-size:30px;letter-spacing:-.02em;margin:0}
+  .ver{font-family:var(--mono);font-size:12px;color:var(--faint);margin-top:6px}
+  h1{font-size:clamp(28px,7vw,40px);line-height:1.12;letter-spacing:-.02em;
+    font-weight:800;margin:30px 0 0}
+  .lede{color:var(--dim);font-size:clamp(16px,4vw,18px);margin:16px auto 0;max-width:34ch}
+  /* cta */
+  .cta{display:flex;gap:12px;justify-content:center;flex-wrap:wrap;margin-top:34px}
+  .btn{display:inline-flex;align-items:center;gap:8px;font-family:var(--mono);font-size:14px;
+    font-weight:600;text-decoration:none;padding:13px 20px;border-radius:12px;
+    border:1px solid transparent;transition:transform .12s ease,background .12s ease,border-color .12s ease}
+  .btn:active{transform:translateY(1px)}
+  .btn-primary{background:var(--orange);color:#fff}
+  .btn-primary:hover{background:#ff6a24}
+  .btn-ghost{background:transparent;color:var(--text);border-color:var(--border)}
+  .btn-ghost:hover{border-color:#3d3d3d;background:#131313}
+  .hint{font-family:var(--mono);font-size:12px;color:var(--faint);margin-top:14px}
+  /* features */
+  .features{margin-top:64px;display:flex;flex-direction:column;gap:16px}
+  .f{background:var(--panel);border:1px solid var(--border);border-left:3px solid var(--c);
+    border-radius:14px;padding:20px 22px}
+  .f .kick{font-family:var(--mono);font-size:11px;letter-spacing:.14em;text-transform:uppercase;
+    color:var(--c);margin:0 0 8px}
+  .f h2{font-size:18px;line-height:1.25;margin:0 0 8px;font-weight:700}
+  .f p{margin:0;color:var(--dim);font-size:15px}
+  /* footer */
+  footer{margin-top:60px;text-align:center;font-family:var(--mono);font-size:12px;color:var(--faint)}
+  footer a{color:var(--dim);text-decoration:none}
+  footer a:hover{color:var(--text)}
+  footer .sep{opacity:.4;margin:0 8px}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <header class="hero">
+    <img class="icon" src="logo.png" alt="Node Remote app icon" width="120" height="120">
+    <p class="brand">node remote</p>
+    <p class="ver">pre-alpha · v0.2.0</p>
+    <h1>Control your node from your phone.</h1>
+    <p class="lede">Watch, control and get notified about your Logos node — over Tor. No account, no server, no port to forward.</p>
+    <div class="cta">
+      <a class="btn btn-primary" href="https://xalisher.github.io/fdroid/repo?fingerprint=9283C4E3DAB31E68675B643AE38222358541431AD07295B6DF4A4C6D2ACCCF32">Get Node Remote on F-Droid</a>
+      <a class="btn btn-ghost" href="https://github.com/xAlisher/node-remote">GitHub</a>
+    </div>
+    <p class="hint">Add the repo in F-Droid, then install Node Remote · Android · no account, no Google</p>
+  </header>
+
+  <main class="features">
+    <section class="f" style="--c:var(--orange)">
+      <p class="kick">Pairing over Tor</p>
+      <h2>Scan the QR, confirm the six digits, done</h2>
+      <p>A Tor v3 onion service with client authorisation. The 6-digit code can only match if both ends hold the same token and address — no account, no server in the middle, no port to forward.</p>
+    </section>
+
+    <section class="f" style="--c:var(--green)">
+      <p class="kick">The whole node, in plain language</p>
+      <h2>See it. Steer it.</h2>
+      <p>Height, peers, balance, blend status and the last error — translated from stack trace to sentence. Start and stop the node, wipe the chain database (your keys survive), regenerate the config.</p>
+    </section>
+
+    <section class="f" style="--c:var(--blue)">
+      <p class="kick">It tells you</p>
+      <h2>Stopped, stalled, no peers, balance moved</h2>
+      <p>Node stopped, node error, sync stalled, no peers, balance changed, block proposed — each one a separate toggle, and notifications can go private so the lock screen shows nothing.</p>
+    </section>
+
+    <section class="f" style="--c:var(--red)">
+      <p class="kick">Leader rewards</p>
+      <h2>Claim from the phone, settle on one ledger</h2>
+      <p>The claimable-voucher pool and a permanent claims ledger, shared with the desktop so the two surfaces cannot drift into disagreeing about your money. The button names the cost before the press.</p>
+    </section>
+  </main>
+
+  <footer>
+    <a href="https://github.com/xAlisher/node-remote">source</a>
+    <span class="sep">·</span>
+    <a href="https://xalisher.github.io/fdroid">F-Droid repo</a>
+    <span class="sep">·</span>
+    <a href="https://alisher.xyz">alisher.xyz</a>
+    <span class="sep">·</span>
+    <span>MIT</span>
+    <span class="sep">·</span>
+    <span>not an official Logos product</span>
+  </footer>
+
+</div>
+</body>
+</html>
