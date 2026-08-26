@@ -542,12 +542,47 @@ std::string NodeRemoteImpl::getBlocks()
 
 std::string NodeRemoteImpl::getProposals()
 {
-    // The node writes its logs beside its config, in a `logs` dir — the same place
-    // logos_node_1click's resetChainState() wipes.
+    // PREFER the desktop's proposals-history.json (beside user_config.yaml, like the
+    // claims ledger): it is the LIFETIME record logos_node_1click maintains, in exactly
+    // the row shape the phone renders ({id,txs,removed,time}). The log grep below only
+    // ever saw the retained rotated logs — and on module 0.2.3 it sees nothing at all
+    // (verified live 2026-08-26: 235 rows in the file, zero "proposed block" lines in
+    // logs/), which is why the phone's Blocks-led tile went blank while the desktop
+    // said 235. Same rule as everywhere else in this module: read what the desktop
+    // wrote, don't re-derive it.
     const QString cfg = g_probe->userConfigPath();
+    if (!cfg.isEmpty()) {
+        QFile f(QFileInfo(cfg).absoluteDir().filePath(QStringLiteral("proposals-history.json")));
+        if (f.open(QIODevice::ReadOnly)) {
+            const QJsonDocument doc = QJsonDocument::fromJson(f.readAll());
+            f.close();
+            if (doc.isArray() && !doc.array().isEmpty()) {
+                QJsonArray arr = doc.array();
+                while (arr.size() > 200) arr.removeLast();   // rows arrive newest-first
+                return QJsonDocument(arr).toJson(QJsonDocument::Compact).toStdString();
+            }
+        }
+    }
+    // Fallback for a machine where the Blockchain pane never ran: the node's own logs,
+    // beside its config in `logs` — the same place logos_node_1click's resetChainState()
+    // wipes. Recent-only, and possibly silent on 0.2.3's wording.
     const QString dir = cfg.isEmpty() ? QString()
                                       : QFileInfo(cfg).absolutePath() + QStringLiteral("/logs");
     return BlockStore::proposalsJson(dir, 200).toStdString();
+}
+
+// The LIFETIME blocks-led count. getProposals() caps at 200 rows for the tab; the
+// Rewards tile must not inherit that cap or 235 reads as 200. File-local, NOT a class
+// method: node_remote_impl.h is the LIDL interface, and a helper declared there would
+// be published as IPC (and rejected — LIDL numbers are 64-bit only).
+static int blocksLedFromHistory(const QString& cfg)
+{
+    if (cfg.isEmpty()) return -1;
+    QFile f(QFileInfo(cfg).absoluteDir().filePath(QStringLiteral("proposals-history.json")));
+    if (!f.open(QIODevice::ReadOnly)) return -1;
+    const QJsonDocument doc = QJsonDocument::fromJson(f.readAll());
+    f.close();
+    return doc.isArray() && !doc.array().isEmpty() ? doc.array().size() : -1;
 }
 
 // Refresh the claimable-voucher count. Runs on the module's timer, NOT on a request —
@@ -682,9 +717,13 @@ std::string NodeRemoteImpl::getRewards()
     // wallet hides any voucher it cannot prove at the current tip and no API lists them.
     // Sent so the phone can show the gap as a gap rather than implying the pool is the
     // whole of what was earned (111 led / 10 claimed / 12 claimable, measured).
-    const QJsonArray props =
-        QJsonDocument::fromJson(QByteArray::fromStdString(getProposals())).array();
-    r["blocksLed"] = props.size();
+    {
+        const int led = blocksLedFromHistory(g_probe->userConfigPath());
+        r["blocksLed"] = led >= 0
+            ? led
+            : static_cast<int>(QJsonDocument::fromJson(
+                  QByteArray::fromStdString(getProposals())).array().size());
+    }
 
     return dump(r);
 }
