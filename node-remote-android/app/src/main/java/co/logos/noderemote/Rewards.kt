@@ -43,7 +43,7 @@ import org.json.JSONObject
 // ── One row of the ledger ──────────────────────────────────────────────────────────────
 data class Claim(
     val tx: String,
-    val status: String,          // submitted | in_block | settled | expired
+    val status: String,          // submitted | in_block | settled | checking | failed (expired = legacy)
     val slot: Long,
     val reward: Long,
     /** null = UNKNOWN, which is a different statement from 0 and must render differently. */
@@ -92,6 +92,13 @@ data class Rewards(
     val claims: List<Claim> = emptyList(),
     val settled: Int = 0,
     val inFlight: Int = 0,
+    /** Rows awaiting a chain verdict — a suspicion, never a conclusion. */
+    val checking: Int = 0,
+    /**
+     * Claims the explorer VERIFIED absent, recently, with no recent landing to veto them.
+     * >=2 is the stale-wallet-state signature and the ONLY thing this screen alarms on.
+     */
+    val failedVerified: Int = 0,
     val claimed: Long = 0,
     val fees: Long = 0,
     val feesComplete: Boolean = true,
@@ -142,6 +149,8 @@ data class Rewards(
                 claims = Claim.list(o.optJSONArray("claims")),
                 settled = s.optInt("settled", 0),
                 inFlight = s.optInt("inFlight", 0),
+                checking = s.optInt("checking", 0),
+                failedVerified = s.optInt("failedVerified", 0),
                 claimed = s.optLong("claimed", 0),
                 fees = s.optLong("fees", 0),
                 feesComplete = s.optBoolean("feesComplete", true),
@@ -166,6 +175,8 @@ fun RewardsTab(
     live: Boolean,
     balanceRaw: Long,
     claiming: Boolean,
+    /** Wall-clock slot from /time/info (module 0.2.3+), -1 when unknown. */
+    clockSlot: Long = -1,
     onClaim: () -> Unit,
 ) {
     // Same rule as every other tab: not connected => no figures. A cached ledger rendered
@@ -178,7 +189,28 @@ fun RewardsTab(
     LazyColumn(Modifier.fillMaxSize().padding(12.dp),
                verticalArrangement = Arrangement.spacedBy(10.dp)) {
 
-        item { PoolCard(r, balanceRaw, claiming, onClaim) }
+        // The one red thing on this screen: >=2 recent explorer-verified absences with no
+        // recent landing is the stale-wallet-state signature (the desktop's 08-24 incident).
+        // The remedy lives on the desktop, so the phone's job is to say so, not to offer a
+        // button it cannot honestly implement.
+        if (r.failedVerified >= 2) {
+            item {
+                Surface(color = LogosColors.gray875, shape = MaterialTheme.shapes.medium,
+                        modifier = Modifier.fillMaxWidth()) {
+                    Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                        Text("${r.failedVerified} claims verified absent on chain",
+                             fontWeight = FontWeight.Bold, color = LogosColors.red500)
+                        Text("The node's wallet state may be stale and needs a rescan — " +
+                             "on the desktop: stop the node, move the db/ folder aside, " +
+                             "start again. Keys and balance are untouched.",
+                             style = MaterialTheme.typography.bodySmall,
+                             color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
+                }
+            }
+        }
+
+        item { PoolCard(r, balanceRaw, claiming, clockSlot, onClaim) }
 
         item {
             // IntrinsicSize.Min + fillMaxHeight makes both tiles as tall as the taller one.
@@ -248,13 +280,14 @@ fun RewardsTab(
                      color = MaterialTheme.colorScheme.onSurfaceVariant,
                      modifier = Modifier.padding(start = 4.dp, top = 6.dp))
             }
-            items(r.claims) { c -> ClaimRow(c) }
+            items(r.claims) { c -> ClaimRow(c, r.libSlot) }
         }
     }
 }
 
 @Composable
-private fun PoolCard(r: Rewards, balanceRaw: Long, claiming: Boolean, onClaim: () -> Unit) {
+private fun PoolCard(r: Rewards, balanceRaw: Long, claiming: Boolean,
+                     clockSlot: Long, onClaim: () -> Unit) {
     var confirm by remember { mutableStateOf(false) }
 
     // The fee is what the LAST settled claim paid. It is the only fee figure that exists —
@@ -300,6 +333,20 @@ private fun PoolCard(r: Rewards, balanceRaw: Long, claiming: Boolean, onClaim: (
             if (r.readyError.isNotEmpty()) {
                 Text(r.readyError, style = MaterialTheme.typography.labelSmall,
                      color = LogosColors.gray400)
+            }
+
+            // The desktop claims automatically in the first minutes of each epoch — the
+            // strategy that measured 13/13 settles against mid-epoch claims being priced
+            // out. Saying so here stops the button below reading as an obligation.
+            // Epochs are exactly 36000 slots at one per second; clockSlot is wall-clock
+            // (/time/info, module 0.2.3+) so this is arithmetic, not an estimate. Hidden
+            // on older nodes rather than computed from the tip slot.
+            if (clockSlot >= 0 && r.ready > 0) {
+                val secs = 36_000 - (clockSlot % 36_000)
+                Text("Desktop auto-claims at epoch start · next in ~${secs / 3600}h " +
+                     "${(secs % 3600) / 60}m",
+                     style = MaterialTheme.typography.bodySmall,
+                     color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
 
             Spacer(Modifier.height(4.dp))
@@ -385,15 +432,22 @@ private fun PoolCard(r: Rewards, balanceRaw: Long, claiming: Boolean, onClaim: (
 }
 
 @Composable
-private fun ClaimRow(c: Claim) {
+private fun ClaimRow(c: Claim, libSlot: Long) {
     // No status glyph. The state is already carried by the word AND its colour, and a mark
     // in front of it was a third encoding of the same fact — it read as a control, and the
     // circle in particular looked like a spinner that never turned.
+    //
+    // Vocabulary = desktop 0.2.20 exactly (node-remote#19): verdicts come only from the
+    // chain; inference only ever says "Confirming…". "Failed" is GRAY, not red — a
+    // priced-out claim is expected behavior under fee movement (nothing consumed, voucher
+    // released, no fee); red belongs to the stale-state alarm alone. "expired" is the
+    // legacy spelling of checking and renders identically.
     val (tint, label) = when (c.status) {
-        "settled"  -> LogosColors.green500 to "Settled"
+        "settled"  -> LogosColors.green500 to "Paid"
         "in_block" -> LogosColors.orange300 to "In a block"
-        "expired"  -> LogosColors.gray400 to "Expired"
-        else       -> LogosColors.orange300 to "Submitted"
+        "checking", "expired" -> LogosColors.gray400 to "Confirming…"
+        "failed"   -> LogosColors.gray400 to "Failed"
+        else       -> LogosColors.orange300 to "Claiming…"
     }
     Card(Modifier.fillMaxWidth()) {
         Column(Modifier.padding(vertical = 8.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
@@ -428,26 +482,56 @@ private fun ClaimRow(c: Claim) {
                              modifier = Modifier.padding(horizontal = 14.dp))
                     }
                 }
-                "expired" -> {
-                    // The honest and complete statement. Nothing was lost: the node's
-                    // reservation aged out, the voucher went back to the pool, and no fee
-                    // was charged because the transaction never executed. This is an
-                    // operational outcome, not a bug, and it must not be hidden.
-                    Text("Voucher returned to the pool · no fee charged",
+                "in_block" -> {
+                    // Verified at the tip, finality pending. The ETA is honest arithmetic
+                    // (block slot vs LIB at one slot per second), and the reward — when the
+                    // desktop's explorer pass has already recovered it — is shown now: the
+                    // balance has counted it, so the row may too.
+                    val mins = if (c.slot > 0 && libSlot > 0)
+                                   ((c.slot - libSlot) / 60).coerceAtLeast(0) else -1
+                    Text(
+                        if (mins > 1) "Verified in a block at the chain tip — finalizing (~$mins min)."
+                        else "Verified in a block — finalizing any moment.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(horizontal = 14.dp))
+                    if (c.reward > 0) {
+                        val net = c.net
+                        Text(
+                            if (net != null)
+                                "+${fmtLgo(c.reward)} − ${fmtLgo(c.fee!!)} = +${fmtLgo(net)}"
+                            else
+                                "+${fmtLgo(c.reward)} − fee unknown",
+                            color = LogosColors.white, fontWeight = FontWeight.Medium,
+                            modifier = Modifier.padding(horizontal = 14.dp),
+                        )
+                    }
+                }
+                "checking", "expired" -> {
+                    // A suspicion, never a verdict: the desktop's explorer pass will
+                    // pronounce Paid or Failed; until then the only honest statement is
+                    // that the chain has not answered.
+                    Text("Not seen by the node's scan yet — being verified against the " +
+                         "chain. No verdict until the chain answers.",
                          style = MaterialTheme.typography.bodySmall,
                          color = MaterialTheme.colorScheme.onSurfaceVariant,
                          modifier = Modifier.padding(horizontal = 14.dp))
-                    if (c.inferred) {
-                        Text("Inferred: an unlanded claim leaves nothing on chain to observe.",
-                             style = MaterialTheme.typography.labelSmall,
-                             color = LogosColors.gray400,
-                             modifier = Modifier.padding(horizontal = 14.dp))
-                    }
+                }
+                "failed" -> {
+                    // Explorer-verified absent. Complete and calm: nothing was consumed,
+                    // the voucher was released, no fee was charged — under fee-market
+                    // movement this is an expected outcome, not a fault.
+                    Text("Verified absent from the chain. Nothing was consumed — the " +
+                         "voucher was released and no fee was charged.",
+                         style = MaterialTheme.typography.bodySmall,
+                         color = MaterialTheme.colorScheme.onSurfaceVariant,
+                         modifier = Modifier.padding(horizontal = 14.dp))
                 }
                 else -> {
-                    // "Submitted" for hours is NORMAL. Finalization runs well behind the
+                    // "Claiming…" for a while is NORMAL. Finalization runs well behind the
                     // tip, so without saying so the state reads as something stuck.
-                    Text("Waiting to finalize — about two hours is normal.",
+                    Text("Waiting to be included in a block, then to finalize. " +
+                         "Finalization runs well behind the chain tip.",
                          style = MaterialTheme.typography.bodySmall,
                          color = MaterialTheme.colorScheme.onSurfaceVariant,
                          modifier = Modifier.padding(horizontal = 14.dp))

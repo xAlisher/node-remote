@@ -18,7 +18,14 @@ data class NodeState(
     val state: String = "",         // Online | Bootstrapping
     val phase: String = "",
     val height: Long = -1,
+    /** The TIP's slot — the replay position during IBD, not the wall clock. */
     val slot: Long = -1,
+    /**
+     * Wall-clock slot/epoch from the node's /time/info (module 0.2.3+). -1 on older
+     * nodes — degrade by not showing time-derived UI, never by computing it from [slot].
+     */
+    val clockSlot: Long = -1,
+    val currentEpoch: Long = -1,
     val peers: Int = -1,
     val error: String = "",
     /**
@@ -46,6 +53,8 @@ data class NodeState(
                 phase = o.optString("phase"),
                 height = o.optLong("height", -1),
                 slot = o.optLong("slot", -1),
+                clockSlot = o.optLong("clockSlot", -1),
+                currentEpoch = o.optLong("currentEpoch", -1),
                 peers = o.optInt("peers", -1),
                 error = o.optString("error"),
                 notice = o.optString("notice"),
@@ -147,10 +156,14 @@ enum class Event(val key: String, val title: String, val blurb: String, val defa
         "Lost every peer connection", false),
     NODE_STARTED("n_started", "Node started",
         "Came back up", false),
+    // Both blurbs state only what is OBSERVED (node-remote#19). "Usually a leader reward
+    // landing" was an inference — the audit that produced the desktop's verified feed found
+    // that class of guess wrong 20 times out of 137. And a landing claim moves the balance
+    // by reward MINUS fee (~65% on the current chain), about an hour before finality.
     BALANCE_CHANGED("n_balance", "Balance changed",
-        "Usually a leader reward landing", false),
+        "The wallet balance moved — the Rewards tab shows what it was", false),
     NEW_PROPOSAL("n_proposal", "Block proposed",
-        "Your node won a leader slot and produced a block", false),
+        "Your node won a leader slot — the reward becomes claimable next epoch", false),
 }
 
 data class Notice(val event: Event, val text: String)

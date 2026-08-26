@@ -723,6 +723,8 @@ class MainActivity : ComponentActivity() {
                                     .trim().trim('"').toLong()
                             }.getOrDefault(0L),
                             claiming = claiming,
+                            clockSlot = if (state.answered && !state.isStale(nowMs))
+                                            state.clockSlot else -1,
                             onClaim = { scope.launch { claim() } },
                         )
                     }
