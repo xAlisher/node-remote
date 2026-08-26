@@ -322,11 +322,16 @@ QByteArray NodeProbe::statusJson()
     writeIntent(Intent::Started);
     out["intent"] = "started";
 
-    // Verified live shape (node v0.2.1, 2026-08-11):
+    // Verified live shape (node v0.2.1, 2026-08-11; re-verified UNCHANGED on module
+    // 0.2.3, 2026-08-26, live against wild):
     //   {"cryptarchia_info":{"lib","lib_slot","tip","slot","height","state"},"phase":"Following"}
     // The consensus fields are NESTED under cryptarchia_info — reading them off the root
     // silently yields nulls, which is what a first pass here did. There is no "mode" key;
     // liveness is "state" ("Online" / "Bootstrapping") and "phase" ("Following").
+    //
+    // NOTE the `slot` here is the TIP's slot, not the wall clock: during IBD it is the
+    // replay position, hours behind real time (logos-blockchain-ui#51). Wall-clock slot
+    // and epoch come from /time/info below — never derive time from this field.
     const QJsonObject root = QJsonDocument::fromJson(info).object();
     const QJsonObject ci   = root.value(QStringLiteral("cryptarchia_info")).toObject();
 
@@ -337,6 +342,27 @@ QByteArray NodeProbe::statusJson()
     out["libSlot"] = ci.value("lib_slot");
     out["state"]   = ci.value("state");            // "Online" | "Bootstrapping"
     out["phase"]   = root.value("phase");          // e.g. "Following"
+
+    // Wall-clock time base (module 0.2.3, verified live 2026-08-26):
+    //   /time/info = {"slot_duration_ms","genesis_time_unix_ms","current_slot","current_epoch"}
+    // This is what the phone needs for the epoch display and the "auto-claims at epoch
+    // start · next in ~X" countdown (node-remote#18): epochs are exactly 36000 slots and
+    // the desktop's scheduler claims in the first 600 s of each. Absent on 0.2.2 nodes —
+    // the fields are simply omitted then, and the phone must degrade to not showing the
+    // countdown rather than computing one from the tip slot.
+    {
+        bool tOk = false;
+        const QByteArray t = get(apiBase() + "/time/info", 1500, &tOk);
+        if (tOk) {
+            const QJsonObject ti = QJsonDocument::fromJson(t).object();
+            if (ti.contains(QStringLiteral("current_slot"))) {
+                out["clockSlot"]      = ti.value("current_slot");
+                out["currentEpoch"]   = ti.value("current_epoch");
+                out["slotDurationMs"] = ti.value("slot_duration_ms");
+                out["genesisTimeMs"]  = ti.value("genesis_time_unix_ms");
+            }
+        }
+    }
 
     // Coarse status the phone renders as a pill. Derived, not invented: if the API answered
     // at all the node is up; "Online" means it is actually following the chain.

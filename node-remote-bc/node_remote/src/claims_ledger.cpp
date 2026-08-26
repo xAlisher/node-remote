@@ -11,11 +11,14 @@
 
 namespace {
 
-// Both lifted from logos_node_1click_backend.cpp so the two surfaces classify a row
+// All lifted from logos_node_1click_backend.cpp so the two surfaces classify a row
 // identically. A phone that called a claim "expired" while the desktop still called it
 // "submitted" would be worse than showing nothing.
 constexpr int kExpiryLookaheadSlots = 20000;
 constexpr int kMaxClaimRows         = 2000;
+// The desktop's alarm recency window (~2 epochs): only failures this fresh count toward
+// the stale-state alarm, and only settles this fresh veto it.
+constexpr qint64 kAlarmWindowSlots  = 72000;
 
 qint64 num(const QJsonObject& o, const char* k)
 {
@@ -98,6 +101,13 @@ QJsonObject ClaimsLedger::read(const QString& userConfigPath, qint64 libSlot)
             const QString tx = v.toObject().value(QStringLiteral("tx")).toString();
             if (!tx.isEmpty()) ledgerTxs.insert(tx);
         }
+        // Rows the user archived with the desktop's Clear log (0.2.20,
+        // logos-blockchain-ui#50) count as "already in the ledger" too — a cleared
+        // claim must not resurrect here as a live phone-pending row.
+        for (const QJsonValue& v : store.value(QStringLiteral("archived")).toArray()) {
+            const QString tx = v.toObject().value(QStringLiteral("tx")).toString();
+            if (!tx.isEmpty()) ledgerTxs.insert(tx);
+        }
         const QJsonArray pending = m_pending.takeUnsettled(userConfigPath, ledgerTxs);
         for (const QJsonValue& v : pending) claims.append(v);
     }
@@ -123,10 +133,13 @@ QJsonObject ClaimsLedger::read(const QString& userConfigPath, qint64 libSlot)
     }
 
     // --- age out submissions that never landed ----------------------------
-    // An unlanded claim produces nothing to observe, so expiry can only be inferred.
-    // The row is marked `inferred` so the phone can say so instead of asserting it.
-    // Nothing is lost when this fires: the node's reservation ages out, the voucher
-    // returns to the pool, and no fee is charged because the tx never executed.
+    // An unlanded claim produces nothing to observe, so aging can only be inferred —
+    // and since 0.2.19 the desktop treats that inference as a SUSPICION, never a
+    // verdict: the row becomes "checking" ("Confirming…" on screen) and only the
+    // explorer pass may pronounce settled or failed. This block used to write
+    // "expired" here, which put a verdict on the phone the desktop had already
+    // abandoned for being wrong 20 times out of 137 (logos-blockchain-ui#47).
+    // The row stays marked `inferred` so a renderer can say so.
     if (libSlot > 0) {
         for (int i = 0; i < claims.size(); ++i) {
             QJsonObject row = claims.at(i).toObject();
@@ -134,7 +147,7 @@ QJsonObject ClaimsLedger::read(const QString& userConfigPath, qint64 libSlot)
                 continue;
             const qint64 at = num(row, "submittedAtSlot");
             if (at > 0 && libSlot > at + kExpiryLookaheadSlots) {
-                row.insert(QStringLiteral("status"), QStringLiteral("expired"));
+                row.insert(QStringLiteral("status"), QStringLiteral("checking"));
                 row.insert(QStringLiteral("inferred"), true);
                 claims.replace(i, row);
             }
@@ -165,7 +178,7 @@ QJsonObject ClaimsLedger::read(const QString& userConfigPath, qint64 libSlot)
 
     // --- summary ----------------------------------------------------------
     qint64 claimed = 0, fees = 0;
-    int settled = 0, inFlight = 0, feesKnown = 0;
+    int settled = 0, inFlight = 0, feesKnown = 0, checking = 0, failedVerified = 0;
     for (const QJsonValue& v : claims) {
         const QJsonObject r = v.toObject();
         const QString st = r.value(QStringLiteral("status")).toString();
@@ -175,7 +188,47 @@ QJsonObject ClaimsLedger::read(const QString& userConfigPath, qint64 libSlot)
             if (r.contains(QStringLiteral("fee"))) { fees += num(r, "fee"); ++feesKnown; }
         } else if (st == QLatin1String("submitted") || st == QLatin1String("in_block")) {
             ++inFlight;
+        } else if (st == QLatin1String("checking") || st == QLatin1String("expired")) {
+            ++checking;
+        } else if (st == QLatin1String("failed")) {
+            // Only RECENT explorer-verified failures count toward the alarm —
+            // historical ones are records, not a condition (desktop 0.2.20 rule).
+            const qint64 at = num(r, "submittedAtSlot");
+            if (at > 0 && libSlot > 0 && libSlot - at < kAlarmWindowSlots)
+                ++failedVerified;
         }
+    }
+
+    // The alarm looks THROUGH the desktop's archive: clearing the list must not
+    // silence a live failure streak — and a recent settle (or a claim verified in a
+    // block at the tip) anywhere, archived included, VETOES it: stale wallet state
+    // cannot land anything, so one landing disproves the diagnosis. Exactly the
+    // desktop's computation, so the two surfaces can never disagree on the alarm.
+    {
+        const QJsonArray archived = store.value(QStringLiteral("archived")).toArray();
+        for (const QJsonValue& v : archived) {
+            const QJsonObject r = v.toObject();
+            if (r.value(QStringLiteral("status")).toString() != QLatin1String("failed"))
+                continue;
+            const qint64 at = num(r, "submittedAtSlot");
+            if (at > 0 && libSlot > 0 && libSlot - at < kAlarmWindowSlots)
+                ++failedVerified;
+        }
+        const auto landedRecently = [&](const QJsonArray& rows) {
+            for (const QJsonValue& v : rows) {
+                const QJsonObject r = v.toObject();
+                const QString rs = r.value(QStringLiteral("status")).toString();
+                if (rs != QLatin1String("settled") && rs != QLatin1String("in_block"))
+                    continue;
+                qint64 at = num(r, "slot");
+                if (at <= 0) at = num(r, "submittedAtSlot");
+                if (at > 0 && libSlot > 0 && libSlot - at < kAlarmWindowSlots)
+                    return true;
+            }
+            return false;
+        };
+        if (landedRecently(claims) || landedRecently(archived))
+            failedVerified = 0;
     }
 
     const qint64 lastScanned = num(store, "lastScannedSlot");
@@ -183,6 +236,10 @@ QJsonObject ClaimsLedger::read(const QString& userConfigPath, qint64 libSlot)
     QJsonObject summary;
     summary.insert(QStringLiteral("settled"),  settled);
     summary.insert(QStringLiteral("inFlight"), inFlight);
+    summary.insert(QStringLiteral("checking"), checking);
+    // >=2 is the stale-wallet-state signature (the 08-24 incident); the phone renders
+    // the rescan alarm from this and nothing else. Red is reserved for it.
+    summary.insert(QStringLiteral("failedVerified"), failedVerified);
     summary.insert(QStringLiteral("claimed"),  claimed);
     summary.insert(QStringLiteral("fees"),     fees);
     // Net is honest only when every settled row has a known fee. When it is not, the
