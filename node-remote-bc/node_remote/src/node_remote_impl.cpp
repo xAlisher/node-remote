@@ -229,6 +229,23 @@ std::string NodeRemoteImpl::getNodeStatus()
     return QJsonDocument(o).toJson(QJsonDocument::Compact).toStdString();
 }
 
+// consensus.wallet.funding_pk out of user_config.yaml. A line scan, not a YAML parser:
+// the key is unique in the file and the value is a bare hex string on the same line.
+static QString fundingPkFromConfig(const QString& cfg)
+{
+    if (cfg.isEmpty()) return {};
+    QFile f(cfg);
+    if (!f.open(QIODevice::ReadOnly | QIODevice::Text)) return {};
+    while (!f.atEnd()) {
+        const QString ln = QString::fromUtf8(f.readLine());
+        const int i = ln.indexOf(QLatin1String("funding_pk:"));
+        if (i < 0) continue;
+        const QString v = ln.mid(i + 11).trimmed();
+        if (v.size() == 64) return v;
+    }
+    return {};
+}
+
 // Refresh the cached wallet figures. Runs on the module's timer, NOT on a request.
 void NodeRemoteImpl::refreshBalance()
 {
@@ -278,10 +295,22 @@ void NodeRemoteImpl::refreshBalance()
         return;
     }
 
-    QString primary;
-    const QJsonDocument ad = QJsonDocument::fromJson(QByteArray::fromStdString(addrs.value.dump()));
-    if (ad.isArray() && !ad.array().isEmpty())      primary = ad.array().first().toString();
-    else if (ad.isObject())                         primary = ad.object().value("address").toString();
+    // Which address IS "the node's balance"? Not addrs.first(). The wallet holds (at
+    // least) two keys with different balances: the account key, and the LEADER FUNDING
+    // key (consensus.wallet.funding_pk) — the one rewards land in and claim fees are
+    // paid from. The desktop's dashboard tile and claim gate both read the funding key
+    // for exactly that reason (logos_node_1click_backend: setLeaderKey), and this module
+    // reading addrs.first() instead is why the phone said 2T while the desktop said 5T
+    // (verified live 2026-08-26: account e10e04b0… = 2,000,000,000,000 untouched;
+    // funding 5da62d70… = 5,000,000,279,476 where every reward settled). Prefer the
+    // funding key from user_config.yaml; the address list is the fallback.
+    QString primary = fundingPkFromConfig(g_probe->userConfigPath());
+    if (primary.isEmpty()) {
+        const QJsonDocument ad =
+            QJsonDocument::fromJson(QByteArray::fromStdString(addrs.value.dump()));
+        if (ad.isArray() && !ad.array().isEmpty())      primary = ad.array().first().toString();
+        else if (ad.isObject())                         primary = ad.object().value("address").toString();
+    }
     if (primary.isEmpty()) {
         QMutexLocker lk(&m_balanceMu);
         m_balanceError = QStringLiteral("the wallet reported no addresses");
