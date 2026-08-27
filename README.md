@@ -156,7 +156,9 @@ See [docs/SIGNING.md](docs/SIGNING.md).
 Pre-alpha, and honest about it. Pairing, status, control, the QR path and the Tor link are
 proven end to end on real hardware — a Pixel talking to a node on another machine. As of
 0.2.0 that includes leader rewards: a real claim was submitted from the phone and appeared on
-both surfaces, against a live node.
+both surfaces, against a live node. 0.2.1 aligns the phone with the desktop's **verified**
+rewards model (chain-verdict vocabulary, the stale-state alarm, wall-clock epoch fields,
+funding-key balance) — verified live against a blockchain_module 0.2.3 node.
 
 Some notification events have never fired live ([#10](https://github.com/xAlisher/node-remote/issues/10)).
 The claimable-voucher count trails a claim by 10–15 seconds
